@@ -27,6 +27,10 @@ import tempfile
 from exo.apputil import create_animation_mp4
 from collections import defaultdict
 
+# Import LiteLLM integration
+from .litellm_adapter import LiteLLMAdapter
+from .litellm_service import LiteLLMService
+
 if platform.system().lower() == "darwin" and platform.machine().lower() == "arm64":
   import mlx.core as mx
 else:
@@ -186,7 +190,9 @@ class ChatGPTAPI:
     response_timeout: int = 90,
     on_chat_completion_request: Callable[[str, ChatCompletionRequest, str], None] = None,
     default_model: Optional[str] = None,
-    system_prompt: Optional[str] = None
+    system_prompt: Optional[str] = None,
+    enable_litellm: bool = True,
+    litellm_config_path: Optional[str] = None
   ):
     self.node = node
     self.inference_engine_classname = inference_engine_classname
@@ -198,10 +204,23 @@ class ChatGPTAPI:
     self.stream_tasks: Dict[str, asyncio.Task] = {}
     self.default_model = default_model or "llama-3.2-1b"
     self.token_queues = defaultdict(asyncio.Queue)
-
+    
+    # Initialize LiteLLM integration if enabled
+    self.litellm_adapter = None
+    if enable_litellm:
+      try:
+        if DEBUG >= 1: print("Initializing LiteLLM integration")
+        litellm_service = LiteLLMService(config_path=litellm_config_path)
+        self.litellm_adapter = LiteLLMAdapter(node, litellm_service=litellm_service)
+        # Don't await initialization here - we'll do it asynchronously in run()
+      except Exception as e:
+        if DEBUG >= 1: 
+          print(f"Failed to initialize LiteLLM integration: {e}")
+          if DEBUG >= 2: traceback.print_exc()
+    
     # Get the callback system and register our handler
     self.token_callback = node.on_token.register("chatgpt-api-token-handler")
-    self.token_callback.on_next(lambda _request_id, tokens, is_finished: asyncio.create_task(self.handle_tokens(_request_id, tokens, is_finished)))
+    self.token_callback.on_next_async(self.handle_tokens)
     self.system_prompt = system_prompt
 
     cors = aiohttp_cors.setup(self.app)
@@ -288,7 +307,20 @@ class ChatGPTAPI:
       return web.json_response({"detail": f"Server error: {str(e)}"}, status=500)
 
   async def handle_get_models(self, request):
+    # Start with local models
     models_list = [{"id": model_name, "object": "model", "owned_by": "exo", "ready": True} for model_name, _ in model_cards.items()]
+    
+    # Add models from LiteLLM if available
+    if self.litellm_adapter and self.litellm_adapter.is_initialized:
+      try:
+        external_models = self.litellm_adapter.get_supported_models()
+        # Only add models that aren't already in the list
+        for model in external_models:
+          if not any(m["id"] == model["id"] for m in models_list):
+            models_list.append(model)
+      except Exception as e:
+        if DEBUG >= 1: print(f"Error getting LiteLLM models: {e}")
+    
     return web.json_response({"object": "list", "data": models_list})
 
   async def handle_post_chat_token_encode(self, request):
@@ -326,19 +358,72 @@ class ChatGPTAPI:
     if DEBUG >= 2: print(f"[ChatGPTAPI] Handling chat completions request from {request.remote}: {data}")
     stream = data.get("stream", False)
     chat_request = parse_chat_request(data, self.default_model)
-    if chat_request.model and chat_request.model.startswith("gpt-"):  # to be compatible with ChatGPT tools, point all gpt- model requests to default model
-      chat_request.model = self.default_model
-    if not chat_request.model or chat_request.model not in model_cards:
-      if DEBUG >= 1: print(f"[ChatGPTAPI] Invalid model: {chat_request.model}. Supported: {list(model_cards.keys())}. Defaulting to {self.default_model}")
-      chat_request.model = self.default_model
-    shard = build_base_shard(chat_request.model, self.inference_engine_classname)
-    if not shard:
-      supported_models = [model for model, info in model_cards.items() if self.inference_engine_classname in info.get("repo", {})]
-      return web.json_response(
-        {"detail": f"Unsupported model: {chat_request.model} with inference engine {self.inference_engine_classname}. Supported models for this engine: {supported_models}"},
-        status=400,
-      )
+    tools = data.get("tools")
+    
+    # Special handling for GPT models when LiteLLM is available
+    use_litellm = False
+    if chat_request.model and chat_request.model.startswith("gpt-") and self.litellm_adapter and self.litellm_adapter.is_initialized:
+      if DEBUG >= 1: print(f"[ChatGPTAPI] Routing {chat_request.model} request to LiteLLM")
+      use_litellm = True
+    elif not chat_request.model or chat_request.model not in model_cards:
+      # For unknown models, try LiteLLM first if available
+      if self.litellm_adapter and self.litellm_adapter.is_initialized and self.litellm_adapter.get_model_mapping_by_id(chat_request.model):
+        if DEBUG >= 1: print(f"[ChatGPTAPI] Routing unknown model {chat_request.model} to LiteLLM")
+        use_litellm = True
+      else:
+        # Fall back to default model
+        if DEBUG >= 1: print(f"[ChatGPTAPI] Invalid model: {chat_request.model}. Supported: {list(model_cards.keys())}. Defaulting to {self.default_model}")
+        chat_request.model = self.default_model
+        
+    # For local models
+    if not use_litellm:
+      shard = build_base_shard(chat_request.model, self.inference_engine_classname)
+      if not shard:
+        supported_models = [model for model, info in model_cards.items() if self.inference_engine_classname in info.get("repo", {})]
+        return web.json_response(
+          {"detail": f"Unsupported model: {chat_request.model} with inference engine {self.inference_engine_classname}. Supported models for this engine: {supported_models}"},
+          status=400,
+        )
 
+    request_id = str(uuid.uuid4())
+    
+    if use_litellm:
+      # Special handling for LiteLLM routed requests
+      # We'll skip tokenization and use a different approach
+      try:
+        # Add system prompt if set
+        if self.system_prompt and not any(msg.role == "system" for msg in chat_request.messages):
+          chat_request.messages.insert(0, Message("system", self.system_prompt))
+          
+        # Convert to format needed by LiteLLM
+        messages = [msg.to_dict() for msg in chat_request.messages]
+        
+        # Simplified prompt for visualization only
+        prompt = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
+        
+        # Create token queue for this request
+        self.token_queues[request_id] = asyncio.Queue()
+        
+        # Notify callback if registered
+        if self.on_chat_completion_request:
+          try:
+            self.on_chat_completion_request(request_id, chat_request, prompt)
+          except Exception as e:
+            if DEBUG >= 2: traceback.print_exc()
+            
+        # We'll process this differently and return from here
+        return await self._handle_litellm_request(
+          request, request_id, chat_request, messages, 
+          stream, self.response_timeout, tools
+        )
+        
+      except Exception as e:
+        if DEBUG >= 2: 
+          print(f"[ChatGPTAPI] Error in LiteLLM processing: {e}")
+          traceback.print_exc()
+        # Fall back to standard processing if there's an error
+    
+    # Standard local processing
     tokenizer = await resolve_tokenizer(get_repo(shard.model_id, self.inference_engine_classname))
     if DEBUG >= 4: print(f"[ChatGPTAPI] Resolved tokenizer: {tokenizer}")
 
@@ -347,7 +432,6 @@ class ChatGPTAPI:
       chat_request.messages.insert(0, Message("system", self.system_prompt))
 
     prompt = build_prompt(tokenizer, chat_request.messages, chat_request.tools)
-    request_id = str(uuid.uuid4())
     if self.on_chat_completion_request:
       try:
         self.on_chat_completion_request(request_id, chat_request, prompt)
@@ -357,7 +441,26 @@ class ChatGPTAPI:
     if DEBUG >= 2: print(f"[ChatGPTAPI] Processing prompt: {request_id=} {shard=} {prompt=}")
 
     try:
-      await asyncio.wait_for(asyncio.shield(asyncio.create_task(self.node.process_prompt(shard, prompt, request_id=request_id))), timeout=self.response_timeout)
+      # Create a task for processing the prompt
+      prompt_task = asyncio.create_task(self.node.process_prompt(shard, prompt, request_id=request_id))
+      
+      # Start the timeout tracking
+      try:
+        await asyncio.wait_for(
+          asyncio.shield(prompt_task), 
+          timeout=self.response_timeout
+        )
+      except asyncio.TimeoutError:
+        # Continue processing - we'll handle timeout more gracefully
+        if DEBUG >= 1:
+          print(f"[ChatGPTAPI] Initial prompt processing timed out but continuing: {request_id=}")
+      except Exception as e:
+        # For other exceptions during initial processing, log but continue
+        # Some nodes might still be able to produce a response even if initial processing failed
+        if DEBUG >= 1:
+          print(f"[ChatGPTAPI] Warning: Initial prompt processing encountered an error: {str(e)}")
+          if DEBUG >= 2:
+            traceback.print_exc()
 
       if DEBUG >= 2: print(f"[ChatGPTAPI] Waiting for response to finish. timeout={self.response_timeout}s")
 
@@ -373,50 +476,102 @@ class ChatGPTAPI:
         await response.prepare(request)
 
         try:
+          # Initialize first response timeout - slightly longer than subsequent ones
+          response_timeout = self.response_timeout
+          first_token_received = False
+          consecutive_timeouts = 0
+          max_consecutive_timeouts = 2  # How many consecutive token timeouts to allow
+          
           # Stream tokens while waiting for inference to complete
           while True:
             if DEBUG >= 2: print(f"[ChatGPTAPI] Waiting for token from queue: {request_id=}")
-            tokens, is_finished = await asyncio.wait_for(
-              self.token_queues[request_id].get(),
-              timeout=self.response_timeout
-            )
-            if DEBUG >= 2: print(f"[ChatGPTAPI] Got token from queue: {request_id=} {tokens=} {is_finished=}")
+            try:
+              tokens, is_finished = await asyncio.wait_for(
+                self.token_queues[request_id].get(),
+                timeout=response_timeout
+              )
+              
+              # Reset timeout counter when we successfully get tokens
+              consecutive_timeouts = 0
+              
+              # Reduce timeout for subsequent tokens after first success
+              if not first_token_received:
+                first_token_received = True
+                response_timeout = min(response_timeout, 15.0)  # Shorter timeout after first token
+                
+              if DEBUG >= 2: print(f"[ChatGPTAPI] Got token from queue: {request_id=} {tokens=} {is_finished=}")
 
-            eos_token_id = None
-            if not eos_token_id and hasattr(tokenizer, "eos_token_id"): eos_token_id = tokenizer.eos_token_id
-            if not eos_token_id and hasattr(tokenizer, "_tokenizer"): eos_token_id = tokenizer.special_tokens_map.get("eos_token_id")
+              eos_token_id = None
+              if not eos_token_id and hasattr(tokenizer, "eos_token_id"): eos_token_id = tokenizer.eos_token_id
+              if not eos_token_id and hasattr(tokenizer, "_tokenizer"): eos_token_id = tokenizer.special_tokens_map.get("eos_token_id")
 
-            finish_reason = None
-            if is_finished: finish_reason = "stop" if tokens[-1] == eos_token_id else "length"
-            if DEBUG >= 2: print(f"{eos_token_id=} {tokens[-1]=} {finish_reason=}")
+              finish_reason = None
+              if is_finished: finish_reason = "stop" if tokens[-1] == eos_token_id else "length"
+              if DEBUG >= 2: print(f"{eos_token_id=} {tokens[-1]=} {finish_reason=}")
 
-            completion = generate_completion(
-              chat_request,
-              tokenizer,
-              prompt,
-              request_id,
-              tokens,
-              stream,
-              finish_reason,
-              "chat.completion",
-            )
+              completion = generate_completion(
+                chat_request,
+                tokenizer,
+                prompt,
+                request_id,
+                tokens,
+                stream,
+                finish_reason,
+                "chat.completion",
+              )
 
-            await response.write(f"data: {json.dumps(completion)}\n\n".encode())
+              await response.write(f"data: {json.dumps(completion)}\n\n".encode())
 
-            if is_finished:
-              break
+              if is_finished:
+                break
+                
+            except asyncio.TimeoutError:
+              consecutive_timeouts += 1
+              if DEBUG >= 2: print(f"[ChatGPTAPI] Timeout waiting for token: {request_id=} ({consecutive_timeouts}/{max_consecutive_timeouts})")
+              
+              # Allow a certain number of consecutive timeouts before giving up
+              if consecutive_timeouts > max_consecutive_timeouts:
+                if first_token_received:
+                  # If we already sent some tokens, finish the stream with a timeout notification
+                  try:
+                    timeout_msg = {"error": {"message": "Token generation timed out", "type": "timeout"}}
+                    await response.write(f"data: {json.dumps(timeout_msg)}\n\n".encode())
+                    await response.write(b"data: [DONE]\n\n")
+                  except Exception:
+                    pass  # Ignore errors during error reporting
+                  break
+                else:
+                  # If no tokens were received yet, return a timeout error
+                  await response.write_eof()
+                  return web.json_response({"detail": "Response generation timed out"}, status=408)
 
+          await response.write(b"data: [DONE]\n\n")
           await response.write_eof()
           return response
 
-        except asyncio.TimeoutError:
-          if DEBUG >= 2: print(f"[ChatGPTAPI] Timeout waiting for token: {request_id=}")
-          return web.json_response({"detail": "Response generation timed out"}, status=408)
-
+        except asyncio.CancelledError:
+          # Handle client disconnection gracefully
+          if DEBUG >= 2: print(f"[ChatGPTAPI] Request was cancelled/client disconnected: {request_id=}")
+          # We don't return a response here, just clean up
+          raise
+          
         except Exception as e:
           if DEBUG >= 2: 
             print(f"[ChatGPTAPI] Error processing prompt: {e}")
             traceback.print_exc()
+          
+          # If we already started streaming, try to send an error message
+          try:
+            if first_token_received:
+              error_msg = {"error": {"message": f"Error: {str(e)}", "type": "internal_error"}}
+              await response.write(f"data: {json.dumps(error_msg)}\n\n".encode())
+              await response.write(b"data: [DONE]\n\n")
+              await response.write_eof()
+              return response
+          except Exception:
+            pass  # Ignore errors during error reporting
+            
+          # Otherwise return a JSON error
           return web.json_response(
             {"detail": f"Error processing prompt: {str(e)}"},
             status=500
@@ -428,26 +583,101 @@ class ChatGPTAPI:
             if DEBUG >= 2: print(f"[ChatGPTAPI] Cleaning up token queue: {request_id=}")
             del self.token_queues[request_id]
       else:
+        # Handle non-streaming response
         tokens = []
-        while True:
-          _tokens, is_finished = await asyncio.wait_for(self.token_queues[request_id].get(), timeout=self.response_timeout)
-          tokens.extend(_tokens)
-          if is_finished:
-            break
-        finish_reason = "length"
-        eos_token_id = None
-        if not eos_token_id and hasattr(tokenizer, "eos_token_id"): eos_token_id = tokenizer.eos_token_id
-        if not eos_token_id and hasattr(tokenizer, "_tokenizer"): eos_token_id = tokenizer.special_tokens_map.get("eos_token_id")
-        if DEBUG >= 2: print(f"Checking if end of tokens result {tokens[-1]=} is {eos_token_id=}")
-        if tokens[-1] == eos_token_id:
-          finish_reason = "stop"
+        try:
+            # Initialize timeout parameters for non-streaming mode
+            response_timeout = self.response_timeout
+            first_token_received = False
+            consecutive_timeouts = 0
+            max_consecutive_timeouts = 2
+            
+            while True:
+              try:
+                _tokens, is_finished = await asyncio.wait_for(
+                    self.token_queues[request_id].get(), 
+                    timeout=response_timeout
+                )
+                
+                # Reset timeout counter and adjust timeout after first success
+                consecutive_timeouts = 0
+                if not first_token_received:
+                    first_token_received = True
+                    response_timeout = min(response_timeout, 15.0)
+                
+                tokens.extend(_tokens)
+                if is_finished:
+                  break
+                  
+              except asyncio.TimeoutError:
+                consecutive_timeouts += 1
+                if DEBUG >= 2: print(f"[ChatGPTAPI] Timeout waiting for token in non-streaming mode: {request_id=} ({consecutive_timeouts}/{max_consecutive_timeouts})")
+                
+                # Allow a limited number of consecutive timeouts
+                if consecutive_timeouts > max_consecutive_timeouts:
+                  # If we already have tokens, return what we've got with timeout reason
+                  if tokens:
+                    if DEBUG >= 1: print(f"[ChatGPTAPI] Returning partial response after timeout: {len(tokens)} tokens")
+                    break
+                  else:
+                    # No tokens received yet, return timeout error
+                    if DEBUG >= 1: print(f"[ChatGPTAPI] No tokens received, returning timeout error")
+                    return web.json_response({"detail": "Response generation timed out"}, status=408)
+            
+            # Determine finish reason
+            finish_reason = "length"  # Default reason
+            
+            # Try to determine if we stopped due to EOS token
+            eos_token_id = None
+            if not eos_token_id and hasattr(tokenizer, "eos_token_id"): eos_token_id = tokenizer.eos_token_id
+            if not eos_token_id and hasattr(tokenizer, "_tokenizer"): eos_token_id = tokenizer.special_tokens_map.get("eos_token_id")
 
-        return web.json_response(generate_completion(chat_request, tokenizer, prompt, request_id, tokens, stream, finish_reason, "chat.completion"))
+            # Only check for EOS token if we actually have tokens
+            if tokens:
+              if DEBUG >= 2: print(f"Checking if end of tokens result {tokens[-1]=} is {eos_token_id=}")
+
+              # Check if the last token is the EOS token
+              if tokens[-1] == eos_token_id:
+                finish_reason = "stop"
+              # If we had consecutive timeouts, mark as timeout
+              elif consecutive_timeouts > 0:
+                finish_reason = "timeout"
+            else:
+              if DEBUG >= 1: print(f"Warning: No tokens generated for request {request_id}")
+              # Use 'empty' reason when no tokens were generated
+              finish_reason = "empty"
+
+            return web.json_response(generate_completion(chat_request, tokenizer, prompt, request_id, tokens, stream, finish_reason, "chat.completion"))
+        
+        except asyncio.CancelledError:
+            # Handle client disconnection gracefully
+            if DEBUG >= 2: print(f"[ChatGPTAPI] Non-streaming request was cancelled: {request_id=}")
+            raise
+            
+        except Exception as e:
+            if DEBUG >= 2: 
+                print(f"[ChatGPTAPI] Error in non-streaming response: {e}")
+                traceback.print_exc()
+            return web.json_response({"detail": f"Error processing response: {str(e)}"}, status=500)
+            
+        finally:
+            # Clean up the queue for this request
+            if request_id in self.token_queues:
+                if DEBUG >= 2: print(f"[ChatGPTAPI] Cleaning up token queue for non-streaming response: {request_id=}")
+                del self.token_queues[request_id]
     except asyncio.TimeoutError:
+      # Clean up on timeout
+      if request_id in self.token_queues:
+        if DEBUG >= 2: print(f"[ChatGPTAPI] Cleaning up token queue on timeout: {request_id=}")
+        del self.token_queues[request_id]
       return web.json_response({"detail": "Response generation timed out"}, status=408)
     except Exception as e:
+      # Clean up on other exceptions
+      if request_id in self.token_queues:
+        if DEBUG >= 2: print(f"[ChatGPTAPI] Cleaning up token queue on exception: {request_id=}")
+        del self.token_queues[request_id]
       if DEBUG >= 2: traceback.print_exc()
-      return web.json_response({"detail": f"Error processing prompt (see logs with DEBUG>=2): {str(e)}"}, status=500)
+      return web.json_response({"detail": f"Error processing prompt: {str(e)}"}, status=500)
 
   async def handle_post_image_generations(self, request):
     data = await request.json()
@@ -621,13 +851,220 @@ class ChatGPTAPI:
       return web.json_response({"detail": f"Error getting topology: {str(e)}"}, status=500)
 
   async def handle_tokens(self, request_id: str, tokens: List[int], is_finished: bool):
-    await self.token_queues[request_id].put((tokens, is_finished))
+    """
+    Process newly generated tokens for a specific request.
 
+    Args:
+        request_id: The unique ID of the request
+        tokens: List of token IDs to process
+        is_finished: Flag indicating if this is the final set of tokens
+
+    Returns:
+        None
+    """
+    try:
+      # Validate inputs
+      if not request_id:
+        if DEBUG >= 1:
+          print(f"Warning: Empty request_id provided to handle_tokens")
+        return
+
+      if not isinstance(tokens, list):
+        if DEBUG >= 1:
+          print(f"Warning: Invalid tokens format for request {request_id}: {type(tokens)}")
+        tokens = list(tokens) if hasattr(tokens, '__iter__') else []
+
+      # Safely check if the queue exists for this request
+      if request_id not in self.token_queues:
+        if DEBUG >= 1:
+          print(f"Warning: Token queue for request {request_id} no longer exists")
+        return
+
+      # Put the tokens in the queue
+      await self.token_queues[request_id].put((tokens, is_finished))
+
+      if is_finished and DEBUG >= 2:
+        print(f"Request {request_id} finished, {len(tokens)} final tokens queued")
+
+    except asyncio.QueueFull:
+      if DEBUG >= 1:
+        print(f"Error: Token queue for request {request_id} is full")
+    except Exception as e:
+      if DEBUG >= 1:
+        print(f"Error in handle_tokens for request {request_id}: {e}")
+        if DEBUG >= 2:
+          traceback.print_exc()
+
+  async def _handle_litellm_request(
+    self, request, request_id: str, chat_request: ChatCompletionRequest, 
+    messages: List[Dict], stream: bool, timeout: float, tools: Optional[List[Dict]] = None
+  ):
+    """Handle a request using LiteLLM"""
+    try:
+      # Initialize LiteLLM adapter if needed
+      if not self.litellm_adapter.is_initialized:
+        await self.litellm_adapter.initialize()
+      
+      params = {
+        "messages": messages,
+        "temperature": chat_request.temperature,
+        "stream": stream
+      }
+      
+      if tools:
+        params["tools"] = tools
+      
+      # For streaming responses
+      if stream:
+        response = web.StreamResponse(
+          status=200,
+          reason="OK",
+          headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+          },
+        )
+        await response.prepare(request)
+        
+        # Create completion iterator using LiteLLM
+        try:
+          all_content = ""
+          async for chunk in await self.litellm_adapter.litellm_service.get_completions(
+            model=chat_request.model,
+            **params
+          ):
+            # Format response according to ChatGPT API format
+            if not chunk["choices"]:
+              continue
+              
+            delta = chunk["choices"][0].get("delta", {})
+            content = delta.get("content", "")
+            
+            if content:
+              all_content += content
+              
+              # Generate a ChatGPT-like response
+              completion = {
+                "id": f"chatcmpl-{request_id}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": chat_request.model,
+                "system_fingerprint": f"exo_litellm_{VERSION}",
+                "choices": [{
+                  "index": 0,
+                  "delta": {"content": content},
+                  "finish_reason": None,
+                }],
+              }
+              
+              await response.write(f"data: {json.dumps(completion)}\n\n".encode())
+            
+            # For final chunk
+            if chunk["choices"][0].get("finish_reason"):
+              # Send final chunk with finish reason
+              finish_reason = chunk["choices"][0]["finish_reason"]
+              completion = {
+                "id": f"chatcmpl-{request_id}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": chat_request.model,
+                "system_fingerprint": f"exo_litellm_{VERSION}",
+                "choices": [{
+                  "index": 0,
+                  "delta": {},
+                  "finish_reason": finish_reason,
+                }],
+              }
+              await response.write(f"data: {json.dumps(completion)}\n\n".encode())
+              break
+              
+          # End the stream
+          await response.write(b"data: [DONE]\n\n")
+          return response
+          
+        except Exception as e:
+          if DEBUG >= 1:
+            print(f"[ChatGPTAPI] Error in LiteLLM streaming: {str(e)}")
+            if DEBUG >= 2: traceback.print_exc()
+          
+          # Try to send error message in stream
+          try:
+            error_msg = {"error": {"message": f"Error: {str(e)}", "type": "internal_error"}}
+            await response.write(f"data: {json.dumps(error_msg)}\n\n".encode())
+            await response.write(b"data: [DONE]\n\n")
+            return response
+          except Exception:
+            # If we can't send error in stream, fall back to JSON response
+            return web.json_response(
+              {"detail": f"Error in LiteLLM streaming: {str(e)}"},
+              status=500
+            )
+      
+      else:
+        # Non-streaming response
+        try:
+          response = await self.litellm_adapter.litellm_service.get_completions(
+            model=chat_request.model,
+            **params
+          )
+          
+          # Format the response according to ChatGPT API format
+          completion = {
+            "id": f"chatcmpl-{request_id}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": chat_request.model,
+            "system_fingerprint": f"exo_litellm_{VERSION}",
+            "choices": [{
+              "index": 0,
+              "message": {
+                "role": "assistant", 
+                "content": response["choices"][0]["message"]["content"]
+              },
+              "finish_reason": response["choices"][0]["finish_reason"]
+            }],
+            "usage": response.get("usage", {
+              "prompt_tokens": 0,  # We don't have exact count
+              "completion_tokens": 0,
+              "total_tokens": 0
+            })
+          }
+          
+          return web.json_response(completion)
+          
+        except Exception as e:
+          if DEBUG >= 1:
+            print(f"[ChatGPTAPI] Error in LiteLLM completion: {str(e)}")
+            if DEBUG >= 2: traceback.print_exc()
+          return web.json_response(
+            {"detail": f"Error in LiteLLM completion: {str(e)}"},
+            status=500
+          )
+    
+    except Exception as e:
+      if DEBUG >= 1:
+        print(f"[ChatGPTAPI] Error handling LiteLLM request: {str(e)}")
+        if DEBUG >= 2: traceback.print_exc()
+      return web.json_response(
+        {"detail": f"Error handling LiteLLM request: {str(e)}"},
+        status=500
+      )
+      
   async def run(self, host: str = "0.0.0.0", port: int = 52415):
     runner = web.AppRunner(self.app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()
+    
+    # Initialize LiteLLM adapter if available
+    if self.litellm_adapter and not self.litellm_adapter.is_initialized:
+      try:
+        await self.litellm_adapter.initialize()
+        if DEBUG >= 1: print("LiteLLM integration initialized successfully")
+      except Exception as e:
+        if DEBUG >= 1: 
+          print(f"Failed to initialize LiteLLM integration: {e}")
+          if DEBUG >= 2: traceback.print_exc()
 
   def base64_decode(self, base64_string):
     #decode and reshape image

@@ -1,0 +1,59 @@
+{
+  "litellm_settings": {
+    "set_verbose": false,
+    "api_base": null,
+    "cache": false,
+    "drop_params": true,
+    "timeout": 120
+  },
+  "default_model": "gpt-3.5-turbo",
+  "router": {
+    "num_retries": 3,
+    "retry_delay": 0.5,
+    "timeout": 30
+  },
+  "model_deployments": [
+    {
+      "model_name": "gpt-4",
+      "litellm_params": {
+        "model": "gpt-4",
+        "api_key": "${OPENAI_API_KEY}"
+      }
+    },
+    {
+      "model_name": "gpt-3.5-turbo",
+      "litellm_params": {
+        "model": "gpt-3.5-turbo",
+        "api_key": "${OPENAI_API_KEY}"
+      }
+    },
+    {
+      "model_name": "claude-3-opus",
+      "litellm_params": {
+        "model": "anthropic/claude-3-opus-20240229",
+        "api_key": "${ANTHROPIC_API_KEY}"
+      }
+    },
+    {
+      "model_name": "claude-3-sonnet",
+      "litellm_params": {
+        "model": "anthropic/claude-3-sonnet-20240229",
+        "api_key": "${ANTHROPIC_API_KEY}"
+      }
+    },
+    {
+      "model_name": "ollama-llama3",
+      "litellm_params": {
+        "model": "ollama/llama3",
+        "api_base": "http://localhost:11434"
+      }
+    },
+    {
+      "model_name": "local-server",
+      "litellm_params": {
+        "model": "openai/mpt-7b",
+        "api_base": "http://localhost:8000/v1"
+      }
+    }
+  ]
+}
