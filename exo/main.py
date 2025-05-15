@@ -114,15 +114,43 @@ if args.node_port is None:
   if DEBUG >= 1: print(f"Using available port: {args.node_port}")
 
 args.node_id = args.node_id or get_or_create_node_id()
-chatgpt_api_endpoints = [f"http://{ip}:{args.chatgpt_api_port}/v1/chat/completions" for ip, _ in get_all_ip_addresses_and_interfaces()]
-web_chat_urls = [f"http://{ip}:{args.chatgpt_api_port}" for ip, _ in get_all_ip_addresses_and_interfaces()]
+
+# Format IP addresses properly for URLs (IPv6 addresses need to be wrapped in brackets)
+def format_ip_for_url(ip):
+    # Check if it's an IPv6 address (contains ':')
+    if ':' in ip and not ip.startswith('localhost'):
+        return f"[{ip}]"
+    return ip
+
+# Get all IP addresses with proper formatting for URLs
+addresses = [(format_ip_for_url(ip), iface) for ip, iface in get_all_ip_addresses_and_interfaces(include_ipv6=True, filter_ipv6=True)]
+
+# Remove duplicates that might appear due to IPv6 formatting
+chatgpt_api_endpoints = [f"http://{ip}:{args.chatgpt_api_port}/v1/chat/completions" for ip, _ in addresses]
+web_chat_urls = [f"http://{ip}:{args.chatgpt_api_port}" for ip, _ in addresses]
+
 if DEBUG >= 0:
   print("Chat interface started:")
-  for web_chat_url in web_chat_urls:
+  # Display only localhost and IPv4 addresses in the console
+  localhost_and_ipv4_urls = [url for url in web_chat_urls if 'localhost' in url or '[' not in url]
+  for web_chat_url in localhost_and_ipv4_urls[:3]:  # Limit to 3 URLs to avoid cluttering the console
     print(f" - {terminal_link(web_chat_url)}")
+  
+  # Only mention IPv6 endpoints if they exist, but don't list them individually
+  ipv6_count = sum(1 for url in web_chat_urls if '[' in url)
+  if ipv6_count > 0:
+    print(f"   (and {ipv6_count} IPv6 endpoints)")
+    
   print("ChatGPT API endpoint served at:")
-  for chatgpt_api_endpoint in chatgpt_api_endpoints:
-    print(f" - {terminal_link(chatgpt_api_endpoint)}")
+  # Display only localhost and IPv4 API endpoints in the console
+  localhost_and_ipv4_endpoints = [endpoint for endpoint in chatgpt_api_endpoints if 'localhost' in endpoint or '[' not in endpoint]
+  for endpoint in localhost_and_ipv4_endpoints[:2]:  # Limit to 2 endpoints
+    print(f" - {terminal_link(endpoint)}")
+    
+  # Only mention IPv6 endpoints if they exist, but don't list them individually
+  ipv6_endpoint_count = sum(1 for endpoint in chatgpt_api_endpoints if '[' in endpoint)
+  if ipv6_endpoint_count > 0:
+    print(f"   (and {ipv6_endpoint_count} IPv6 endpoints)")
 
 # Convert node-id-filter and interface-type-filter to lists if provided
 allowed_node_ids = args.node_id_filter.split(',') if args.node_id_filter else None
@@ -147,12 +175,13 @@ elif args.discovery_module == "tailscale":
     discovery_timeout=args.discovery_timeout,
     tailscale_api_key=args.tailscale_api_key,
     tailnet=args.tailnet_name,
-    allowed_node_ids=allowed_node_ids
+    allowed_node_ids=allowed_node_ids,
+    discovery_id=f"tailscale-{args.node_id}"
   )
 elif args.discovery_module == "manual":
   if not args.discovery_config_path:
     raise ValueError(f"--discovery-config-path is required when using manual discovery. Please provide a path to a config json file.")
-  discovery = ManualDiscovery(args.discovery_config_path, args.node_id, create_peer_handle=lambda peer_id, address, description, device_capabilities: GRPCPeerHandle(peer_id, address, description, device_capabilities))
+  discovery = ManualDiscovery(args.discovery_config_path, args.node_id, create_peer_handle=lambda peer_id, address, description, device_capabilities: GRPCPeerHandle(peer_id, address, description, device_capabilities), discovery_id=f"manual-{args.node_id}")
 topology_viz = TopologyViz(chatgpt_api_endpoints=chatgpt_api_endpoints, web_chat_urls=web_chat_urls) if not args.disable_tui else None
 node = Node(
   args.node_id,

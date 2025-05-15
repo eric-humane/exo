@@ -1,6 +1,7 @@
 from exo.inference.shard import Shard
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
+# First define the model cards
 model_cards = {
   ### llama
   "llama-3.3-70b": {
@@ -154,6 +155,7 @@ model_cards = {
   "dummy": { "layers": 8, "repo": { "DummyInferenceEngine": "dummy", }, },
 }
 
+# Define pretty names for models
 pretty_name = {
   "llama-3.3-70b": "Llama 3.3 70B",
   "llama-3.2-1b": "Llama 3.2 1B",
@@ -230,6 +232,19 @@ pretty_name = {
   "deepseek-r1-distill-llama-70b-6bit": "DeepSeek R1 Distill Llama 70B (6-bit)",
   "deepseek-r1-distill-llama-70b-8bit": "DeepSeek R1 Distill Llama 70B (8-bit)",
   "deepseek-r1-distill-qwen-32b-6bit": "DeepSeek R1 Distill Qwen 32B (6-bit)",
+}
+
+# Create MODEL_CARDS for litellm adapter compatibility
+MODEL_CARDS: Dict[str, Dict[str, Any]] = {
+    model_id: {
+        "layers": model_cards.get(model_id, {}).get("layers", 0),
+        "repo": model_cards.get(model_id, {}).get("repo", {}),
+        "pretty_name": pretty_name.get(model_id, model_id),
+        "max_tokens": 2048,  # Default max tokens
+        "context_length": 8192,  # Default context length
+        "supports_tools": False  # Default tools support
+    }
+    for model_id in model_cards
 }
 
 def get_repo(model_id: str, inference_engine_classname: str) -> Optional[str]:

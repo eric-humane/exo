@@ -104,22 +104,83 @@ class AsyncCallback(Generic[T]):
   def __init__(self) -> None:
     self.condition: asyncio.Condition = asyncio.Condition()
     self.result: Optional[Tuple[T, ...]] = None
-    self.observers: list[Callable[..., None]] = []
+    self.sync_observers: list[Callable[..., None]] = []
+    self.async_observers: list[Callable[..., object]] = []  # Could return Awaitable[None] but that's not available in all Python versions
 
-  async def wait(self, check_condition: Callable[..., bool], timeout: Optional[float] = None) -> Tuple[T, ...]:
+  async def wait(self, check_condition: Callable[..., object], timeout: Optional[float] = None) -> Tuple[T, ...]:
+    """
+    Wait for a condition to be met. The check_condition can be either a sync or async function.
+    If it's async, it will be awaited properly.
+    
+    Args:
+        check_condition: Function that takes the result values and returns a boolean (or awaitable boolean)
+        timeout: Maximum time to wait in seconds
+    
+    Returns:
+        The result tuple once the condition is met
+    """
     async with self.condition:
-      await asyncio.wait_for(self.condition.wait_for(lambda: self.result is not None and check_condition(*self.result)), timeout)
-      assert self.result is not None  # for type checking
-      return self.result
+      # Create a wrapper that handles both sync and async check conditions
+      async def condition_wrapper():
+        if self.result is None:
+          return False
+          
+        result = check_condition(*self.result)
+        # If it's awaitable, await it
+        if asyncio.iscoroutine(result):
+          return await result
+        # Otherwise return directly
+        return result
+      
+      try:
+        # Use asyncio.wait_for directly on our wrapper with the condition notifier
+        async def wait_for_condition():
+          while True:
+            if await condition_wrapper():
+              return True
+            await self.condition.wait()
+            
+        await asyncio.wait_for(wait_for_condition(), timeout)
+        
+        # If we reach here, the condition was met
+        assert self.result is not None
+        return self.result
+      except asyncio.TimeoutError:
+        # If we time out, raise a more descriptive error
+        if self.result is None:
+          raise asyncio.TimeoutError("Timed out waiting for result to be set")
+        else:
+          raise asyncio.TimeoutError("Timed out waiting for condition to be met")
 
   def on_next(self, callback: Callable[..., None]) -> None:
-    self.observers.append(callback)
+    """Register a synchronous callback function"""
+    self.sync_observers.append(callback)
+    
+  def on_next_async(self, callback: Callable[..., object]) -> None:
+    """Register an asynchronous callback coroutine function"""
+    self.async_observers.append(callback)
 
   def set(self, *args: T) -> None:
+    """Set the result and call all observers"""
     self.result = args
-    for observer in self.observers:
+    
+    # Call synchronous observers directly
+    for observer in self.sync_observers:
       observer(*args)
-    asyncio.create_task(self.notify())
+      
+    # Schedule async observers as tasks if there's a running event loop
+    try:
+      loop = asyncio.get_running_loop()
+      for async_observer in self.async_observers:
+        loop.create_task(async_observer(*args))
+      
+      # Notify any waiters
+      loop.create_task(self.notify())
+    except RuntimeError:
+      # If there's no running event loop, we can't run async callbacks
+      # This usually happens in tests or when used outside of async code
+      if self.async_observers and DEBUG >= 1:
+        print("Warning: Async callbacks skipped because there's no running event loop")
 
   async def notify(self) -> None:
     async with self.condition:
@@ -230,21 +291,83 @@ def pretty_print_bytes_per_second(bytes_per_second: int) -> str:
     return f"{bytes_per_second / (1024 ** 4):.2f} TB/s"
 
 
-def get_all_ip_addresses_and_interfaces():
+def get_all_ip_addresses_and_interfaces(include_ipv6: bool = True, filter_ipv6: bool = True):
+    """
+    Get all IP addresses and their associated interfaces.
+    
+    Args:
+        include_ipv6: Whether to include IPv6 addresses
+        filter_ipv6: Whether to filter out certain IPv6 addresses (link-local, ULA, etc.)
+        
+    Returns:
+        List of (ip_address, interface_name) tuples
+    """
     ip_addresses = []
+    
+    # Always add localhost to the list first
+    ip_addresses.append(("localhost", "lo"))
+    
+    # Get IPv4 addresses using scapy
     for interface in get_if_list():
       try:
         ip = get_if_addr(interface)
-        if ip.startswith("0.0."): continue
+        # Skip invalid/special IPs
+        if ip.startswith("0.0.") or ip == "0.0.0.0" or ip == "127.0.0.1":
+            continue
         simplified_interface = re.sub(r'^\\Device\\NPF_', '', interface)
         ip_addresses.append((ip, simplified_interface))
       except:
-        if DEBUG >= 1: print(f"Failed to get IP address for interface {interface}")
+        if DEBUG >= 1: print(f"Failed to get IPv4 address for interface {interface}")
         if DEBUG >= 1: traceback.print_exc()
-    if not ip_addresses:
-      if DEBUG >= 1: print("Failed to get any IP addresses. Defaulting to localhost.")
-      return [("localhost", "lo")]
-    return list(set(ip_addresses))
+    
+    # Get IPv6 addresses if requested
+    if include_ipv6:
+      try:
+        import socket
+        import psutil
+        
+        # Use psutil to get network interfaces and addresses
+        for name, addrs in psutil.net_if_addrs().items():
+          for addr in addrs:
+            # Check if it's an IPv6 address (Address family 23 or 30 is IPv6)
+            if addr.family in (socket.AF_INET6, 30):  # 30 is AF_INET6 on some systems
+              address = addr.address.split('%')[0]  # Remove scope ID if present
+              
+              # Skip certain types of IPv6 addresses if filtering is enabled
+              if filter_ipv6:
+                # Skip link-local addresses (fe80::) 
+                if address.startswith('fe80:'):
+                  continue
+                # Skip ULA addresses (fd00::/8)
+                if address.startswith('fd'):
+                  continue
+                # Skip deprecated site-local addresses (fec0::/10)
+                if address.startswith('fec') or address.startswith('fed') or address.startswith('fee') or address.startswith('fef'):
+                  continue
+                # Skip loopback addresses (::1)
+                if address == "::1":
+                  continue
+                # Skip unspecified addresses (::)
+                if address == "::":
+                  continue
+              
+              # Add the IPv6 address and interface name
+              simplified_interface = re.sub(r'^\\Device\\NPF_', '', name)
+              ip_addresses.append((address, simplified_interface))
+      except Exception as e:
+        if DEBUG >= 1: print(f"Failed to get IPv6 addresses: {e}")
+        if DEBUG >= 1: traceback.print_exc()
+    
+    # Remove duplicates but maintain order preference
+    # (localhost first, then IPv4, then IPv6)
+    seen = set()
+    result = []
+    for ip, iface in ip_addresses:
+      if ip not in seen:
+        seen.add(ip)
+        result.append((ip, iface))
+    
+    return result
 
 
 
@@ -363,6 +486,12 @@ def get_exo_home() -> Path:
   exo_folder = docs_folder/"Exo"
   if not exo_folder.exists(): exo_folder.mkdir(exist_ok=True)
   return exo_folder
+
+
+def get_exo_config_dir() -> Path:
+  config_dir = Path.home()/".exo"
+  if not config_dir.exists(): config_dir.mkdir(exist_ok=True)
+  return config_dir
 
 
 def get_exo_images_dir() -> Path:

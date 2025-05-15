@@ -29,94 +29,344 @@ document.addEventListener("alpine:init", () => {
 
     // download progress
     downloadProgress: null,
-    downloadProgressInterval: null, // To keep track of the polling interval
 
     // Pending message storage
     pendingMessage: null,
-
-    modelPoolInterval: null,
 
     // Add models state alongside existing state
     models: {},
 
     // Show only models available locally
-    showDownloadedOnly: false,
+    showDownloadedOnly: localStorage.getItem("showDownloadedOnly") === "true" || false,
 
     topology: null,
-    topologyInterval: null,
 
     // Add these new properties
-    expandedGroups: {},
+    expandedGroups: {
+      'LOCAL': true,
+      'CLOUD': true,
+      'NETWORK': true
+    },
+    
+    // Timestamp of last fetches to prevent excessive polling
+    lastModelFetch: 0,
+    lastProgressFetch: 0,
 
     init() {
       // Clean up any pending messages
       localStorage.removeItem("pendingMessage");
-
-      // Get initial model list
-      this.fetchInitialModels();
-
-      // Start polling for download progress
-      this.startDownloadProgressPolling();
-
-      // Start model polling with the new pattern
-      this.startModelPolling();
+      
+      // Initial model fetch - once at startup
+      this.fetchModels();
+      
+      // Setup manual refresh button functionality when the button exists
+      document.getElementById('refresh-models')?.addEventListener('click', () => {
+        this.fetchModels();
+      });
+      
+      // Check download progress once at startup
+      this.fetchDownloadProgress();
+      
+      // Setup network topology check periodically
+      this.fetchTopology();
+      setInterval(() => this.fetchTopology(), 10000);
+      
+      // Only fetch new data when the user is actively interacting with the page
+      window.addEventListener('focus', () => this.onPageFocus());
+      
+      // Add event listener for visibility changes
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          this.onPageFocus();
+        }
+      });
     },
-
-    async fetchInitialModels() {
+    
+    filterChanged() {
+      // Save filter preference to localStorage
+      localStorage.setItem("showDownloadedOnly", this.showDownloadedOnly);
+      this.fetchModels();
+    },
+    
+    async fetchTopology() {
       try {
-        const response = await fetch(`${window.location.origin}/initial_models`);
+        const requestOptions = {
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
+          }
+        };
+        
+        const response = await fetch(`${window.location.origin}/topology`, requestOptions);
         if (response.ok) {
-          const initialModels = await response.json();
-          this.models = initialModels;
+          const data = await response.json();
+          this.topology = data;
+          
+          // Render topology visualization
+          this.renderTopology();
         }
       } catch (error) {
-        console.error('Error fetching initial models:', error);
+        console.error('Error fetching topology:', error);
       }
     },
-
-    async startModelPolling() {
-      while (true) {
-        try {
-          await this.populateSelector();
-          // Wait 15 seconds before next poll
-          await new Promise(resolve => setTimeout(resolve, 15000));
-        } catch (error) {
-          console.error('Model polling error:', error);
-          // If there's an error, wait before retrying
-          await new Promise(resolve => setTimeout(resolve, 15000));
-        }
+    
+    renderTopology() {
+      if (!this.topology || !this.$refs.topologyViz) return;
+      
+      // Clear previous content
+      this.$refs.topologyViz.innerHTML = '';
+      
+      // If there are no nodes, show empty message
+      if (!this.topology.nodes || this.topology.nodes.length === 0) {
+        const emptyMessage = document.createElement('div');
+        emptyMessage.className = 'empty-category-message';
+        emptyMessage.textContent = 'No nodes in network topology';
+        this.$refs.topologyViz.appendChild(emptyMessage);
+        return;
       }
-    },
-
-    async populateSelector() {
-      return new Promise((resolve, reject) => {
-        const evtSource = new EventSource(`${window.location.origin}/modelpool`);
-
-        evtSource.onmessage = (event) => {
-          if (event.data === "[DONE]") {
-            evtSource.close();
-            resolve();
-            return;
+      
+      // Create node elements
+      this.topology.nodes.forEach(node => {
+        const nodeElement = document.createElement('div');
+        nodeElement.className = 'topology-node';
+        
+        // Node header
+        const nodeHeader = document.createElement('div');
+        nodeHeader.className = 'node-info';
+        
+        const statusIndicator = document.createElement('div');
+        statusIndicator.className = 'status ' + (node.is_active ? 'active' : 'inactive');
+        
+        const nodeName = document.createElement('span');
+        nodeName.textContent = node.name || node.id || 'Unknown Node';
+        
+        nodeHeader.appendChild(statusIndicator);
+        nodeHeader.appendChild(nodeName);
+        nodeElement.appendChild(nodeHeader);
+        
+        // Node details
+        if (node.ip || node.device_type) {
+          const nodeDetails = document.createElement('div');
+          nodeDetails.className = 'node-details';
+          
+          if (node.ip) {
+            const ipElement = document.createElement('span');
+            ipElement.innerHTML = `<i class="fas fa-network-wired"></i> ${node.ip}`;
+            nodeDetails.appendChild(ipElement);
           }
+          
+          if (node.device_type) {
+            const deviceElement = document.createElement('span');
+            deviceElement.innerHTML = `<i class="fas fa-microchip"></i> ${node.device_type}`;
+            nodeDetails.appendChild(deviceElement);
+          }
+          
+          nodeElement.appendChild(nodeDetails);
+        }
+        
+        // Add to visualization
+        this.$refs.topologyViz.appendChild(nodeElement);
+      });
+    },
+    
+    onPageFocus() {
+      // Only fetch if it's been at least 5 seconds since the last fetch
+      const now = Date.now();
+      if (now - this.lastModelFetch >= 5000) {
+        this.fetchModels();
+      }
+      
+      if (now - this.lastProgressFetch >= 2000) {
+        this.fetchDownloadProgress();
+      }
+    },
 
-          const modelData = JSON.parse(event.data);
-          // Update existing model data while preserving other properties
-          Object.entries(modelData).forEach(([modelName, data]) => {
-            if (this.models[modelName]) {
-              this.models[modelName] = {
-                ...this.models[modelName],
-                ...data,
-                loading: false
+    async fetchModels() {
+      try {
+        this.lastModelFetch = Date.now();
+        
+        // Clear loading state for all models
+        Object.keys(this.models).forEach(key => {
+          if (this.models[key]) {
+            this.models[key].loading = false;
+          }
+        });
+        
+        // Step 1: Add default cloud models to ensure they always show up
+        this.ensureDefaultCloudModels();
+        
+        // Configure standard request options for CORS compatibility
+        const requestOptions = {
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
+          }
+        };
+        
+        // Step 2: Get local models from the initial_models endpoint
+        try {
+          const initialResponse = await fetch(`${window.location.origin}/initial_models`, requestOptions);
+          if (initialResponse.ok) {
+            const initialModels = await initialResponse.json();
+            Object.entries(initialModels).forEach(([modelId, modelData]) => {
+              // If the model doesn't exist yet, create it
+              if (!this.models[modelId]) {
+                this.models[modelId] = {};
+              }
+              
+              // Update with local model data
+              this.models[modelId] = {
+                ...this.models[modelId],
+                ...modelData,
+                id: modelId,
+                name: modelData.name || modelData.display_name || modelId,
+                loading: false,
+                provider: 'exo',
+                isLocalModel: true,
+                total_size: modelData.total_size || 0,
+                download_percentage: modelData.download_percentage || 0,
+                downloaded: modelData.downloaded === true,
+                canDelete: true
               };
+            });
+          }
+        } catch (error) {
+          console.error('Error fetching initial models:', error);
+        }
+        
+        // Step 3: Get the complete model list including cloud models
+        try {
+          const response = await fetch(`${window.location.origin}/models`, requestOptions);
+          
+          if (response.ok) {
+            const data = await response.json();
+            if (data && data.data && Array.isArray(data.data)) {
+              // Process model data from response
+              data.data.forEach(model => {
+                // Make sure the model has an ID
+                if (!model.id) return;
+                
+                // Determine if it's a cloud model
+                const isCloud = model.provider === 'openai' || 
+                               model.provider === 'anthropic' ||
+                               model.id.startsWith('gpt-') || 
+                               model.id.startsWith('claude-');
+                
+                // If the model doesn't exist yet, create it
+                if (!this.models[model.id]) {
+                  this.models[model.id] = {};
+                }
+                
+                // Update the model data
+                this.models[model.id] = {
+                  ...this.models[model.id],
+                  ...model,
+                  loading: false,
+                  id: model.id,
+                  name: model.display_name || model.name || model.id,
+                  downloaded: model.ready === true || model.downloaded === true,
+                  provider: model.provider || (model.id.startsWith('gpt-') ? 'openai' :
+                                             model.id.startsWith('claude-') ? 'anthropic' : 'exo'),
+                  isLocalModel: !isCloud,
+                  isCloudModel: isCloud,
+                  canDelete: !isCloud,
+                  download_percentage: model.download_percentage || (model.ready ? 100 : 0)
+                };
+              });
             }
-          });
-        };
-
-        evtSource.onerror = (error) => {
-          console.error('EventSource failed:', error);
-          evtSource.close();
-          reject(error);
-        };
+          }
+        } catch (error) {
+          console.error('Error fetching models API:', error);
+        }
+        
+        // Force Alpine.js to update
+        this.models = {...this.models};
+      } catch (error) {
+        console.error('Error in fetchModels:', error);
+      }
+    },
+    
+    ensureDefaultCloudModels() {
+      // OpenAI models
+      const openaiModels = [
+        {
+          id: 'gpt-4',
+          name: 'GPT-4',
+          provider: 'openai',
+          isCloudModel: true,
+          canDelete: false,
+          downloaded: true,
+          download_percentage: 100
+        },
+        {
+          id: 'gpt-4-turbo',
+          name: 'GPT-4 Turbo',
+          provider: 'openai',
+          isCloudModel: true,
+          canDelete: false,
+          downloaded: true,
+          download_percentage: 100
+        },
+        {
+          id: 'gpt-3.5-turbo',
+          name: 'GPT-3.5 Turbo',
+          provider: 'openai',
+          isCloudModel: true,
+          canDelete: false,
+          downloaded: true,
+          download_percentage: 100
+        }
+      ];
+      
+      // Anthropic models
+      const anthropicModels = [
+        {
+          id: 'claude-3-opus',
+          name: 'Claude 3 Opus',
+          provider: 'anthropic',
+          isCloudModel: true,
+          canDelete: false,
+          downloaded: true,
+          download_percentage: 100
+        },
+        {
+          id: 'claude-3-sonnet',
+          name: 'Claude 3 Sonnet',
+          provider: 'anthropic',
+          isCloudModel: true,
+          canDelete: false,
+          downloaded: true,
+          download_percentage: 100
+        },
+        {
+          id: 'claude-3-haiku',
+          name: 'Claude 3 Haiku',
+          provider: 'anthropic',
+          isCloudModel: true,
+          canDelete: false,
+          downloaded: true,
+          download_percentage: 100
+        }
+      ];
+      
+      // Add all OpenAI models
+      openaiModels.forEach(model => {
+        if (!this.models[model.id]) {
+          this.models[model.id] = model;
+        } else {
+          this.models[model.id] = {...this.models[model.id], ...model};
+        }
+      });
+      
+      // Add all Anthropic models
+      anthropicModels.forEach(model => {
+        if (!this.models[model.id]) {
+          this.models[model.id] = model;
+        } else {
+          this.models[model.id] = {...this.models[model.id], ...model};
+        }
       });
     },
 
@@ -170,7 +420,6 @@ document.addEventListener("alpine:init", () => {
         reader.readAsDataURL(file);
       }
     },
-
 
     async handleSend() {
       try {
@@ -391,7 +640,11 @@ document.addEventListener("alpine:init", () => {
     updateTotalTokens(messages) {
       fetch(`${this.endpoint}/chat/token/encode`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        credentials: 'include',
+        headers: { 
+          "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest"
+        },
         body: JSON.stringify({ messages }),
       }).then((response) => response.json()).then((data) => {
         this.total_tokens = data.length;
@@ -401,8 +654,10 @@ document.addEventListener("alpine:init", () => {
     async *openaiChatCompletion(model, messages) {
       const response = await fetch(`${this.endpoint}/chat/completions`, {
         method: "POST",
+        credentials: 'include',
         headers: {
           "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest"
         },
         body: JSON.stringify({
           "model": model,
@@ -427,11 +682,21 @@ document.addEventListener("alpine:init", () => {
         if (done) break;
         
         if (value.type === "event") {
-          const json = JSON.parse(value.data);
-          if (json.choices) {
-            const choice = json.choices[0];
-            if (choice.finish_reason === "stop") break;
-            if (choice.delta.content) yield choice.delta.content;
+          try {
+            const json = JSON.parse(value.data);
+            if (json.done === true) {
+              // Handle the done message with proper JSON format
+              break;
+            }
+            if (json.choices) {
+              const choice = json.choices[0];
+              if (choice.finish_reason === "stop") break;
+              if (choice.delta.content) yield choice.delta.content;
+            }
+          } catch (e) {
+            // Handle case where [DONE] is sent as plain string (legacy format)
+            if (value.data === "[DONE]") break;
+            console.error("Error parsing event data:", e, "Data:", value.data);
           }
         }
       }
@@ -439,74 +704,88 @@ document.addEventListener("alpine:init", () => {
 
     async fetchDownloadProgress() {
       try {
-        const response = await fetch(`${this.endpoint}/download/progress`);
-        if (response.ok) {
-          const data = await response.json();
-          const progressArray = Object.values(data);
-          if (progressArray.length > 0) {
-            this.downloadProgress = progressArray.map(progress => {
-              // Check if download is complete
-              if (progress.status === "complete") {
-                return {
-                  ...progress,
-                  isComplete: true,
-                  percentage: 100
-                };
-              } else if (progress.status === "failed") {
-                return {
-                  ...progress,
-                  isComplete: false,
-                  errorMessage: "Download failed"
-                };
-              } else {
-                return {
-                  ...progress,
-                  isComplete: false,
-                  downloaded_bytes_display: this.formatBytes(progress.downloaded_bytes),
-                  total_bytes_display: this.formatBytes(progress.total_bytes),
-                  overall_speed_display: progress.overall_speed ? this.formatBytes(progress.overall_speed) + '/s' : '',
-                  overall_eta_display: progress.overall_eta ? this.formatDuration(progress.overall_eta) : '',
-                  percentage: ((progress.downloaded_bytes / progress.total_bytes) * 100).toFixed(2)
-                };
-              }
-            });
-            const allComplete = this.downloadProgress.every(progress => progress.isComplete);
-            if (allComplete) {
-              // Check for pendingMessage
-              const savedMessage = localStorage.getItem("pendingMessage");
-              if (savedMessage) {
-                // Clear pendingMessage
-                localStorage.removeItem("pendingMessage");
-                // Call processMessage() with savedMessage
-                if (this.lastErrorMessage) {
-                  await this.processMessage(savedMessage);
-                }
-              }
-              this.lastErrorMessage = null;
-              this.downloadProgress = null;
-            }
-          } else {
-            // No ongoing download
-            this.downloadProgress = null;
+        this.lastProgressFetch = Date.now();
+        
+        const requestOptions = {
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
           }
+        };
+        
+        const response = await fetch(`${this.endpoint}/download/progress`, requestOptions);
+        
+        if (!response.ok) return;
+        
+        const data = await response.json();
+        if (!data || typeof data !== 'object') return;
+        
+        const progressArray = Object.values(data);
+        if (progressArray.length === 0) {
+          this.downloadProgress = null;
+          return;
+        }
+        
+        this.downloadProgress = progressArray.map(progress => {
+          if (!progress || typeof progress !== 'object') {
+            return { isComplete: false, percentage: 0 };
+          }
+          
+          // Check if download is complete
+          if (progress.status === "complete") {
+            return {
+              ...progress,
+              isComplete: true,
+              percentage: 100
+            };
+          } else if (progress.status === "failed") {
+            return {
+              ...progress,
+              isComplete: false,
+              errorMessage: "Download failed",
+              percentage: 0
+            };
+          } else {
+            const downloadedBytes = typeof progress.downloaded_bytes === 'number' ? progress.downloaded_bytes : 0;
+            const totalBytes = typeof progress.total_bytes === 'number' && progress.total_bytes > 0 ? progress.total_bytes : 1;
+            const percentage = Math.min(((downloadedBytes / totalBytes) * 100), 99.9).toFixed(2);
+            
+            return {
+              ...progress,
+              isComplete: false,
+              downloaded_bytes_display: this.formatBytes(downloadedBytes),
+              total_bytes_display: this.formatBytes(totalBytes),
+              overall_speed_display: progress.overall_speed ? this.formatBytes(progress.overall_speed) + '/s' : '',
+              overall_eta_display: progress.overall_eta ? this.formatDuration(progress.overall_eta) : '',
+              percentage: percentage
+            };
+          }
+        });
+        
+        // If all downloads are complete, update models and clear progress
+        const allComplete = this.downloadProgress.every(progress => progress.isComplete);
+        if (allComplete) {
+          this.fetchModels(); // Refresh models after download completes
+          this.downloadProgress = null;
+        }
+        
+        // If downloads are in progress, check again soon
+        if (this.downloadProgress !== null) {
+          setTimeout(() => this.fetchDownloadProgress(), 2000);
         }
       } catch (error) {
         console.error("Error fetching download progress:", error);
-        this.downloadProgress = null;
       }
     },
 
-    startDownloadProgressPolling() {
-      if (this.downloadProgressInterval) {
-        // Already polling
-        return;
-      }
-      this.fetchDownloadProgress(); // Fetch immediately
-      this.downloadProgressInterval = setInterval(() => {
-        this.fetchDownloadProgress();
-      }, 1000); // Poll every second
+    initTopology() {
+      // Initial fetch is handled in init()
+      // This just ensures the reference to the element is available
+      // Later operations will use this.$refs.topologyViz
+      console.log("Topology reference initialized");
     },
-
+    
     // Add a helper method to set errors consistently
     setError(error) {
       this.errorMessage = {
@@ -528,6 +807,14 @@ document.addEventListener("alpine:init", () => {
     },
 
     async deleteModel(modelName, model) {
+      // Check if this is a cloud model - if so, don't allow deletion
+      if (model.isCloudModel || model.isPeerModel || model.canDelete === false) {
+        this.setError({
+          message: `${model.name} cannot be deleted because it's not stored locally.`
+        });
+        return;
+      }
+      
       const downloadedSize = model.total_downloaded || 0;
       const sizeMessage = downloadedSize > 0 ?
         `This will free up ${this.formatBytes(downloadedSize)} of space.` :
@@ -568,7 +855,7 @@ document.addEventListener("alpine:init", () => {
         console.log(`Model deleted successfully from: ${data.path}`);
 
         // Refresh the model list
-        await this.populateSelector();
+        this.fetchModels();
       } catch (error) {
         console.error('Error deleting model:', error);
         this.setError(error.message || 'Failed to delete model');
@@ -601,120 +888,185 @@ document.addEventListener("alpine:init", () => {
           };
         }
 
+        // Start checking download progress
+        this.fetchDownloadProgress();
+
       } catch (error) {
         console.error('Error starting download:', error);
         this.setError(error);
       }
     },
 
-    async fetchTopology() {
-      try {
-        const response = await fetch(`${this.endpoint}/topology`);
-        if (!response.ok) throw new Error('Failed to fetch topology');
-        return await response.json();
-      } catch (error) {
-        console.error('Topology fetch error:', error);
-        return null;
-      }
-    },
-
-    initTopology() {
-      // Initial fetch
-      this.updateTopology();
-
-      // Set up periodic updates
-      this.topologyInterval = setInterval(() => this.updateTopology(), 5000);
-
-      // Cleanup on page unload
-      window.addEventListener('beforeunload', () => {
-        if (this.topologyInterval) {
-          clearInterval(this.topologyInterval);
+    // Update the groupModelsByPrefix method to include provider info and separate online models
+    groupModelsByPrefix(models) {
+      // Create models structure
+      const groups = {
+        'LOCAL': {
+          'LLAMA': {},
+          'MISTRAL': {},
+          'DEEPSEEK': {},
+          'PHI': {},
+          'QWEN': {},
+          'GEMMA2': {},
+          'LLAVA': {},
+          'STABLE': {},
+          'NEMOTRON': {},
+          'DUMMY': {}
+        },
+        'CLOUD': {
+          'OPENAI': {},
+          'ANTHROPIC': {}
+        },
+        'NETWORK': {} // Network/peer models
+      };
+      
+      console.log('Processing models, total count:', Object.keys(models).length);
+      
+      // First, process all models to ensure structure is correct
+      Object.entries(models).forEach(([modelId, model]) => {
+        // Skip models with no data
+        if (!model || !modelId) return;
+        
+        try {
+          // Cloud models
+          if (model.isCloudModel || model.provider === 'openai' || model.provider === 'anthropic' || 
+              modelId.startsWith('gpt-') || modelId.startsWith('claude-')) {
+            
+            const provider = model.provider ? model.provider.toUpperCase() : 
+                            modelId.startsWith('gpt-') ? 'OPENAI' : 
+                            modelId.startsWith('claude-') ? 'ANTHROPIC' : 'OTHER';
+            
+            if (!groups['CLOUD'][provider]) {
+              groups['CLOUD'][provider] = {};
+            }
+            
+            groups['CLOUD'][provider][modelId] = model;
+          }
+          // Network models
+          else if (model.isPeerModel || model.peer_id || model.node_id) {
+            const peerName = model.peer_name || model.node_name || 'UNKNOWN';
+            
+            if (!groups['NETWORK'][peerName]) {
+              groups['NETWORK'][peerName] = {};
+            }
+            
+            groups['NETWORK'][peerName][modelId] = model;
+          }
+          // Local models
+          else {
+            // Parse model category from name
+            let category = 'OTHER';
+            if (modelId.includes('-')) {
+              const parts = modelId.split('-');
+              category = parts[0].toUpperCase();
+            }
+            
+            // Ensure the category exists
+            if (!groups['LOCAL'][category]) {
+              groups['LOCAL'][category] = {};
+            }
+            
+            // Add the model to its category
+            groups['LOCAL'][category][modelId] = model;
+          }
+        } catch (error) {
+          console.error('Error processing model:', modelId, error);
         }
       });
-    },
-
-    async updateTopology() {
-      const topologyData = await this.fetchTopology();
-      if (!topologyData) return;
-
-      const vizElement = this.$refs.topologyViz;
-      vizElement.innerHTML = ''; // Clear existing visualization
-
-      // Helper function to truncate node ID
-      const truncateNodeId = (id) => id.substring(0, 8);
-
-      // Create nodes from object
-      Object.entries(topologyData.nodes).forEach(([nodeId, node]) => {
-        const nodeElement = document.createElement('div');
-        nodeElement.className = 'topology-node';
-
-        // Get peer connections for this node
-        const peerConnections = topologyData.peer_graph[nodeId] || [];
-        const peerConnectionsHtml = peerConnections.map(peer => `
-          <div class="peer-connection">
-            <i class="fas fa-arrow-right"></i>
-            <span>To ${truncateNodeId(peer.to_id)}: ${peer.description}</span>
-          </div>
-        `).join('');
-
-        nodeElement.innerHTML = `
-          <div class="node-info">
-            <span class="status ${nodeId === topologyData.active_node_id ? 'active' : 'inactive'}"></span>
-            <span>${node.model} [${truncateNodeId(nodeId)}]</span>
-          </div>
-          <div class="node-details">
-            <span>${node.chip}</span>
-            <span>${(node.memory / 1024).toFixed(1)}GB RAM</span>
-            <span>${node.flops.fp32.toFixed(1)} TF</span>
-          </div>
-          <div class="peer-connections">
-            ${peerConnectionsHtml}
-          </div>
-        `;
-        vizElement.appendChild(nodeElement);
+      
+      // Apply downloaded-only filter if enabled
+      if (this.showDownloadedOnly) {
+        console.log('Applying downloaded-only filter');
+        
+        // Process each group type
+        Object.keys(groups).forEach(groupType => {
+          // Process each category in the group
+          Object.keys(groups[groupType]).forEach(category => {
+            // Filter models in this category
+            const categoryModels = groups[groupType][category];
+            const filteredCategoryModels = {};
+            
+            Object.entries(categoryModels).forEach(([modelId, model]) => {
+              // For cloud models, they're always "downloaded"
+              if (model.provider && model.provider !== 'exo') {
+                filteredCategoryModels[modelId] = model;
+              }
+              // For local models, check downloaded status (include ready models)
+              else if (model.downloaded === true || model.ready === true || model.download_percentage === 100) {
+                filteredCategoryModels[modelId] = model;
+              }
+            });
+            
+            // Replace with filtered models
+            groups[groupType][category] = filteredCategoryModels;
+          });
+        });
+      }
+      
+      // Clean up empty categories, but keep necessary structure
+      Object.keys(groups).forEach(groupType => {
+        // Never delete the top level LOCAL or CLOUD categories
+        Object.keys(groups[groupType]).forEach(category => {
+          // Only delete empty subcategories that are not essential
+          if (Object.keys(groups[groupType][category]).length === 0 && 
+             !(groupType === 'LOCAL' && ['LLAMA', 'MISTRAL', 'DEEPSEEK'].includes(category)) &&
+             !(groupType === 'CLOUD' && ['OPENAI', 'ANTHROPIC'].includes(category))) {
+            delete groups[groupType][category];
+          }
+        });
       });
+      
+      return groups;
     },
 
-    // Add these helper methods
+    // Helper methods to count downloaded models
     countDownloadedModels(models) {
-      return Object.values(models).filter(model => model.downloaded).length;
+      if (!models || typeof models !== 'object') {
+        return 0;
+      }
+      const count = Object.values(models)
+        .filter(model => model && typeof model === 'object' && 
+                (model.downloaded === true || 
+                 model.download_percentage === 100 || 
+                 model.ready === true || 
+                 (model.provider && model.provider !== 'exo')))
+        .length;
+      return count;
     },
 
     getGroupCounts(groupModels) {
+      if (!groupModels || typeof groupModels !== 'object') {
+        return '[0/0]';
+      }
       const total = Object.keys(groupModels).length;
       const downloaded = this.countDownloadedModels(groupModels);
-      return `[${downloaded}/${total}]`;
+      return downloaded > 0 ? `[${downloaded}/${total}]` : `[0/${total}]`;
     },
-
-    // Update the existing groupModelsByPrefix method to include counts
-    groupModelsByPrefix(models) {
-      const groups = {};
-      const filteredModels = this.showDownloadedOnly ?
-        Object.fromEntries(Object.entries(models).filter(([, model]) => model.downloaded)) :
-        models;
-
-      Object.entries(filteredModels).forEach(([key, model]) => {
-        const parts = key.split('-');
-        const mainPrefix = parts[0].toUpperCase();
-        
-        let subPrefix;
-        if (parts.length === 2) {
-          subPrefix = parts[1].toUpperCase();
-        } else if (parts.length > 2) {
-          subPrefix = parts[1].toUpperCase();
-        } else {
-          subPrefix = 'OTHER';
-        }
-        
-        if (!groups[mainPrefix]) {
-          groups[mainPrefix] = {};
-        }
-        if (!groups[mainPrefix][subPrefix]) {
-          groups[mainPrefix][subPrefix] = {};
-        }
-        groups[mainPrefix][subPrefix][key] = model;
-      });
-      return groups;
+    
+    // Safer version for nested groups
+    getNestedGroupCounts(subGroups) {
+      if (!subGroups || typeof subGroups !== 'object') {
+        return '[0/0]';
+      }
+      
+      try {
+        const allModels = Object.values(subGroups)
+          .filter(group => group && typeof group === 'object')
+          .flatMap(group => Object.values(group || {}));
+            
+        const total = allModels.length;
+        const downloaded = allModels.filter(model => 
+            model && 
+            (model.downloaded === true || 
+             model.download_percentage === 100 || 
+             model.ready === true || 
+             (model.provider && model.provider !== 'exo'))
+        ).length;
+        return downloaded > 0 ? `[${downloaded}/${total}]` : `[0/${total}]`;
+      } catch (error) {
+        console.error("Error calculating group counts:", error);
+        return '[?/?]';
+      }
     },
 
     toggleGroup(prefix, subPrefix = null) {

@@ -1,0 +1,457 @@
+/* 
+Custom CSS for exo Gradio UI
+This replaces the tinychat styling with a modern, responsive design 
+*/
+
+:root {
+  --primary-color: #4a69bd;
+  --secondary-color: #6a89cc;
+  --accent-color: #82ccdd;
+  --background-color: #222831;
+  --foreground-color: #eeeeee;
+  --card-bg-color: #393e46;
+  --hover-color: #4a69bd33;
+  --text-color: #eeeeee;
+  --border-color: #4a4a4a;
+  --shadow-color: rgba(0, 0, 0, 0.3);
+  --error-color: #ff6b6b;
+  --success-color: #1dd1a1;
+  --warning-color: #feca57;
+  --info-color: #54a0ff;
+  --font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  --code-font-family: 'Fira Code', 'Source Code Pro', 'Courier New', monospace;
+}
+
+/* Typography */
+body, html {
+  font-family: var(--font-family);
+  color: var(--text-color);
+  background-color: var(--background-color);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-family);
+  font-weight: 500;
+  color: var(--text-color);
+}
+
+h1.title {
+  font-family: 'Megrim', var(--font-family);
+  letter-spacing: 2px;
+  text-align: center;
+  font-size: 2.5rem;
+  margin: 0.5rem 0;
+  color: var(--accent-color);
+}
+
+/* Model Selector */
+.model-groups-container {
+  max-height: 500px;
+  overflow-y: auto;
+  border-radius: 8px;
+  background-color: var(--card-bg-color);
+  padding: 0.5rem;
+}
+
+.model-loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100px;
+  color: var(--text-color);
+  font-style: italic;
+}
+
+.model-main-group {
+  margin-bottom: 1rem;
+}
+
+.model-main-group-header {
+  font-size: 1.1rem;
+  font-weight: 500;
+  padding: 0.5rem;
+  background-color: var(--primary-color);
+  color: var(--foreground-color);
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+}
+
+.model-category {
+  margin-bottom: 0.5rem;
+  border-left: 3px solid var(--secondary-color);
+  margin-left: 0.5rem;
+}
+
+.model-category-header {
+  font-size: 0.9rem;
+  font-weight: 500;
+  padding: 0.3rem 0.5rem;
+  color: var(--foreground-color);
+  background-color: var(--card-bg-color);
+  cursor: pointer;
+}
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.3rem;
+}
+
+.model-item {
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem;
+  border-radius: 4px;
+  background-color: var(--card-bg-color);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.model-item:hover {
+  background-color: var(--hover-color);
+}
+
+.model-item.selected {
+  background-color: var(--primary-color);
+  border-color: var(--accent-color);
+}
+
+.model-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.3rem;
+}
+
+.model-name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+}
+
+.model-badge {
+  font-size: 0.6rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-weight: bold;
+}
+
+.cloud-badge {
+  background-color: var(--info-color);
+  color: #fff;
+}
+
+.peer-badge {
+  background-color: var(--warning-color);
+  color: #000;
+}
+
+.model-delete-btn, .model-download-btn {
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.model-delete-btn {
+  background-color: var(--error-color);
+  color: white;
+}
+
+.model-download-btn {
+  background-color: var(--success-color);
+  color: white;
+}
+
+.model-info {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: var(--text-color);
+}
+
+.model-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.model-size {
+  color: var(--text-color);
+  opacity: 0.8;
+}
+
+/* Chat Interface */
+.chatbot-container {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  overflow: hidden;
+  background-color: var(--background-color);
+}
+
+.chatbot {
+  flex-grow: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background-color: var(--card-bg-color);
+}
+
+.message {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  border-radius: 8px;
+  max-width: 90%;
+}
+
+.message-user {
+  background-color: var(--primary-color);
+  color: white;
+  margin-left: auto;
+  border-top-right-radius: 0;
+}
+
+.message-assistant {
+  background-color: var(--card-bg-color);
+  color: var(--text-color);
+  margin-right: auto;
+  border-top-left-radius: 0;
+  border: 1px solid var(--border-color);
+}
+
+.message-image {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 0.5rem;
+}
+
+.message-image img {
+  max-width: 100%;
+  max-height: 300px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.user-input-container {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border-top: 1px solid var(--border-color);
+  background-color: var(--card-bg-color);
+}
+
+.user-input {
+  flex-grow: 1;
+  border-radius: 4px;
+  padding: 0.5rem;
+  border: 1px solid var(--border-color);
+  background-color: var(--background-color);
+  color: var(--text-color);
+  resize: none;
+  min-height: 40px;
+  max-height: 200px;
+}
+
+.send-button {
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.send-button:hover {
+  background-color: var(--secondary-color);
+}
+
+.send-button:disabled {
+  background-color: var(--border-color);
+  cursor: not-allowed;
+}
+
+/* Performance Metrics */
+.performance-panel {
+  display: flex;
+  gap: 1rem;
+  padding: 0.5rem;
+  background-color: var(--card-bg-color);
+  border-radius: 8px;
+  margin-bottom: 0.5rem;
+}
+
+.perf-model-name, .perf-stat {
+  flex: 1;
+  text-align: center;
+  font-size: 0.9rem;
+  background-color: var(--background-color);
+  padding: 0.5rem;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Network Topology */
+.topology-container {
+  height: 300px;
+  background-color: var(--card-bg-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* Code Blocks */
+.code-block-wrapper {
+  position: relative;
+  margin: 1rem 0;
+}
+
+.codeblock {
+  background-color: #1e1e1e !important;
+  color: #d4d4d4;
+  border-radius: 4px;
+  padding: 1rem;
+  overflow-x: auto;
+  font-family: var(--code-font-family);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.copy-code-button {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.3rem;
+  background-color: rgba(255, 255, 255, 0.1);
+  border: none;
+  border-radius: 4px;
+  color: white;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s ease;
+}
+
+.copy-code-button:hover {
+  opacity: 1;
+}
+
+/* Thinking Blocks */
+.thinking-block {
+  background-color: #2d3748;
+  border-radius: 4px;
+  margin: 1rem 0;
+  overflow: hidden;
+}
+
+.thinking-header {
+  background-color: var(--secondary-color);
+  color: white;
+  padding: 0.5rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.thinking-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top-color: white;
+  animation: spin 1s linear infinite;
+}
+
+.thinking-content {
+  padding: 0.5rem;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Download Progress */
+.download-progress {
+  background-color: var(--card-bg-color);
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.progress-bar-container {
+  height: 8px;
+  background-color: var(--background-color);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 0.5rem 0;
+}
+
+.progress-bar {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+.progress-bar.in-progress {
+  background-color: var(--primary-color);
+}
+
+.progress-bar.complete {
+  background-color: var(--success-color);
+}
+
+/* Error Messages */
+.error-message {
+  background-color: var(--error-color);
+  color: white;
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+/* Responsive design */
+@media screen and (max-width: 768px) {
+  .performance-panel {
+    flex-wrap: wrap;
+  }
+  
+  .perf-model-name, .perf-stat {
+    flex-basis: 45%;
+  }
+  
+  .message {
+    max-width: 100%;
+  }
+}
+
+/* Dark scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--background-color);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--primary-color);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--secondary-color);
+}

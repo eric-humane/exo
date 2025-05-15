@@ -134,6 +134,12 @@ main {
   margin: 0 auto;
 }
 
+@media (max-width: 768px) {
+  .messages {
+    padding-top: 2rem;
+  }
+}
+
 .message {
   max-width: 75%;
   padding: 0.5rem 1rem;
@@ -169,12 +175,19 @@ main {
   left: 50%;
   transform: translateX(-50%);
   margin-left: 125px;
-  width: 100%;
+  width: calc(100% - 250px);
   max-width: 1200px;
   overflow-y: auto;
   min-height: 350px;
   padding: 2rem;
   z-index: 998;
+}
+
+@media (max-width: 768px) {
+  .download-progress {
+    width: 100%;
+    margin-left: 0;
+  }
 }
 .message > pre {
   white-space: pre-wrap;
@@ -295,7 +308,6 @@ main {
 .input-container {
   position: fixed;
   bottom: 0;
-  left: 250px;
   width: calc(100% - 250px);
   max-width: 1200px;
   display: flex;
@@ -385,9 +397,10 @@ p {
 
 /* fonts */
 .megrim-regular {
-  font-family: "Megrim", system-ui;
+  font-family: "Megrim", "Megrim-Fallback", "Roboto", monospace, system-ui;
   font-weight: 400;
   font-style: normal;
+  letter-spacing: 1px;
 }
 
 .monospace {
@@ -552,6 +565,94 @@ main {
   width: calc(100% - 250px);
 }
 
+/* Mobile responsive styles */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 100%;
+    height: auto;
+    max-height: 50vh;
+    position: relative;
+    padding: 10px;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  
+  main {
+    margin-left: 0;
+    width: 100%;
+  }
+  
+  .input-container {
+    margin-left: 0 !important;
+    width: 100%;
+    left: 0;
+    transform: none;
+  }
+  
+  .back-button {
+    left: 1rem;
+  }
+  
+  .model-option {
+    padding: 8px;
+    margin: 5px 0;
+  }
+  
+  .topology-section {
+    margin-bottom: 15px;
+    padding: 10px;
+  }
+  
+  .model-group-header,
+  .model-subgroup-header {
+    padding: 5px 8px;
+  }
+  
+  .messages {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  
+  .download-progress {
+    bottom: 11rem;
+    left: 0;
+    width: 100%;
+    margin-left: 0;
+    transform: none;
+  }
+  
+  /* Ensure model groups are consistently displayed */
+  .model-group, .model-subgroup {
+    width: 100%;
+    display: block;
+  }
+}
+
+/* Extra small devices */
+@media (max-width: 480px) {
+  .sidebar {
+    padding: 5px;
+  }
+  
+  .model-option {
+    padding: 5px;
+    margin: 3px 0;
+  }
+  
+  .model-name {
+    font-size: 0.9em;
+  }
+  
+  .model-progress {
+    font-size: 0.8em;
+  }
+  
+  .model-group-content,
+  .model-subgroup-content {
+    padding-left: 5px;
+  }
+}
+
 /* Add styles for the back button */
 .back-button {
   position: fixed;
@@ -568,6 +669,29 @@ main {
   gap: 0.5rem;
   z-index: 1000;
   transition: all 0.2s ease;
+}
+
+/* Refresh button */
+.refresh-button {
+  background-color: var(--secondary-color);
+  color: var(--foreground-color);
+  border: none;
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.refresh-button:hover {
+  background-color: var(--secondary-color-transparent);
+  transform: rotate(180deg);
+}
+
+.refresh-button i {
+  font-size: 1em;
 }
 
 .back-button:hover {
@@ -843,4 +967,67 @@ main {
   font-size: 0.8em;
   color: var(--secondary-color-transparent);
   font-family: monospace;
+}
+
+/* Cloud Model Styling */
+.model-option.cloud-model {
+  border-left: 3px solid #3498db;
+  background-color: rgba(52, 152, 219, 0.1);
+}
+
+.model-option.peer-model {
+  border-left: 3px solid #9b59b6;
+  background-color: rgba(155, 89, 182, 0.1);
+}
+
+.model-badge {
+  display: inline-block;
+  font-size: 0.6em;
+  padding: 2px 4px;
+  border-radius: 3px;
+  margin-left: 5px;
+  font-weight: bold;
+  vertical-align: middle;
+  color: white;
+  text-transform: uppercase;
+}
+
+.cloud-badge {
+  background-color: #3498db;
+}
+
+.peer-badge {
+  background-color: #9b59b6;
+}
+
+.empty-category-message {
+  color: #888;
+  font-style: italic;
+  padding: 5px 10px;
+  font-size: 0.9em;
+  text-align: center;
+}
+
+/* Model capabilities styling */
+.model-capabilities {
+  display: flex;
+  gap: 10px;
+  font-size: 0.8em;
+  color: #888;
+  margin: 2px 0 5px 0;
+}
+
+.capability-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.capability-label {
+  color: #666;
+}
+
+.capability-value {
+  color: #333;
+  font-weight: bold;
 }

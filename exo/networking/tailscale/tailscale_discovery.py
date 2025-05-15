@@ -1,11 +1,12 @@
 import asyncio
 import time
 import traceback
-from typing import List, Dict, Callable, Tuple
+from typing import List, Dict, Callable, Tuple, Optional
 from exo.networking.discovery import Discovery
 from exo.networking.peer_handle import PeerHandle
 from exo.topology.device_capabilities import DeviceCapabilities, device_capabilities, UNKNOWN_DEVICE_CAPABILITIES
 from exo.helpers import DEBUG, DEBUG_DISCOVERY
+from exo.utils.async_resources import ResourceState
 from .tailscale_helpers import get_device_id, update_device_attributes, get_device_attributes, get_tailscale_devices, Device
 
 
@@ -22,8 +23,11 @@ class TailscaleDiscovery(Discovery):
     tailscale_api_key: str = None,
     tailnet: str = None,
     allowed_node_ids: List[str] = None,
+    discovery_id: Optional[str] = None,
   ):
-    self.node_id = node_id
+    # Initialize the AsyncResource base class
+    super().__init__(node_id=node_id, discovery_id=discovery_id)
+    
     self.node_port = node_port
     self.create_peer_handle = create_peer_handle
     self.discovery_interval = discovery_interval
@@ -38,8 +42,12 @@ class TailscaleDiscovery(Discovery):
     self.allowed_node_ids = allowed_node_ids
     self._device_id = None
     self.update_task = None
+    self._is_running = False
 
   async def start(self):
+    """Start the discovery service, initializing it if necessary."""
+    await self.initialize()
+    self._is_running = True
     self.device_capabilities = await device_capabilities()
     self.discovery_task = asyncio.create_task(self.task_discover_peers())
     self.cleanup_task = asyncio.create_task(self.task_cleanup_peers())
@@ -116,6 +124,8 @@ class TailscaleDiscovery(Discovery):
         await asyncio.sleep(self.discovery_interval)
 
   async def stop(self):
+    """Stop the discovery service and clean up resources."""
+    self._is_running = False
     if self.discovery_task:
       self.discovery_task.cancel()
     if self.cleanup_task:
@@ -124,6 +134,7 @@ class TailscaleDiscovery(Discovery):
       self.update_task.cancel()
     if self.discovery_task or self.cleanup_task or self.update_task:
       await asyncio.gather(self.discovery_task, self.cleanup_task, self.update_task, return_exceptions=True)
+    await self.cleanup()
 
   async def discover_peers(self, wait_for_peers: int = 0) -> List[PeerHandle]:
     if wait_for_peers > 0:
@@ -176,3 +187,61 @@ class TailscaleDiscovery(Discovery):
 
     should_remove = ((not is_connected and current_time - connected_at > self.discovery_timeout) or (current_time - last_seen > self.discovery_timeout) or (not health_ok))
     return should_remove
+    
+  async def _do_initialize(self) -> None:
+    """Implementation-specific initialization for tailscale discovery."""
+    # Nothing specific to initialize beyond what's done in __init__
+    # We'll set the running flag and start tasks in start() method
+    pass
+    
+  async def _do_cleanup(self) -> None:
+    """Implementation-specific cleanup for the tailscale discovery service."""
+    # Cancel all tasks if running
+    tasks_to_cancel = []
+    if self.discovery_task and not self.discovery_task.done():
+      self.discovery_task.cancel()
+      tasks_to_cancel.append(self.discovery_task)
+    
+    if self.cleanup_task and not self.cleanup_task.done():
+      self.cleanup_task.cancel()
+      tasks_to_cancel.append(self.cleanup_task)
+      
+    if self.update_task and not self.update_task.done():
+      self.update_task.cancel()
+      tasks_to_cancel.append(self.update_task)
+    
+    # Wait for tasks to complete
+    if tasks_to_cancel:
+      await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+    
+    # Close all peer handles
+    for peer_id, (peer_handle, _, _) in list(self.known_peers.items()):
+      try:
+        await peer_handle.close()
+      except Exception as e:
+        if DEBUG_DISCOVERY >= 1:
+          print(f"Error closing peer handle for {peer_id}: {e}")
+    
+    # Clear the known peers
+    self.known_peers.clear()
+    
+  async def _check_health(self) -> bool:
+    """Implementation-specific health check for the tailscale discovery service."""
+    # Check if we're running
+    if not self._is_running:
+      return False
+      
+    # Check if the discovery task is alive
+    if not self.discovery_task or self.discovery_task.done():
+      return False
+      
+    # Check if the cleanup task is alive
+    if not self.cleanup_task or self.cleanup_task.done():
+      return False
+      
+    # Check if the update task is alive
+    if not self.update_task or self.update_task.done():
+      return False
+      
+    # All checks passed
+    return True

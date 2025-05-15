@@ -8,6 +8,7 @@ from exo.topology.device_capabilities import DeviceCapabilities
 from exo.networking.manual.network_topology_config import NetworkTopology, PeerConfig
 from exo.helpers import DEBUG_DISCOVERY
 from exo.networking.peer_handle import PeerHandle
+from exo.utils.async_resources import ResourceState
 
 
 class ManualDiscovery(Discovery):
@@ -16,9 +17,12 @@ class ManualDiscovery(Discovery):
     network_config_path: str,
     node_id: str,
     create_peer_handle: Callable[[str, str, str, DeviceCapabilities], PeerHandle],
+    discovery_id: Optional[str] = None,
   ):
+    # Initialize the AsyncResource base class
+    super().__init__(node_id=node_id, discovery_id=discovery_id)
+    
     self.network_config_path = network_config_path
-    self.node_id = node_id
     self.create_peer_handle = create_peer_handle
 
     self.listen_task = None
@@ -27,13 +31,20 @@ class ManualDiscovery(Discovery):
     self._cached_peers: Dict[str, PeerConfig] = {}
     self._last_modified_time: Optional[float] = None
     self._file_executor = ThreadPoolExecutor(max_workers=1)
+    self._is_running = False
 
   async def start(self) -> None:
+    """Start the discovery service, initializing it if necessary."""
+    await self.initialize()
+    self._is_running = True
     self.listen_task = asyncio.create_task(self.task_find_peers_from_config())
 
   async def stop(self) -> None:
+    """Stop the discovery service and clean up resources."""
+    self._is_running = False
     if self.listen_task: self.listen_task.cancel()
     self._file_executor.shutdown(wait=True)
+    await self.cleanup()
 
   async def discover_peers(self, wait_for_peers: int = 0) -> List[PeerHandle]:
     if wait_for_peers > 0:
@@ -99,3 +110,54 @@ class ManualDiscovery(Discovery):
               f"Please update the config file in order to successfully discover peers. "
               f"Exception: {e}")
       return self._cached_peers
+      
+  async def _do_initialize(self) -> None:
+    """Implementation-specific initialization for manual discovery."""
+    # Nothing specific to initialize beyond what's done in __init__
+    # We'll set the running flag in start() method
+    pass
+    
+  async def _do_cleanup(self) -> None:
+    """Implementation-specific cleanup for the manual discovery service."""
+    # Cancel listen task if running
+    if self.listen_task and not self.listen_task.done():
+      self.listen_task.cancel()
+      try:
+        await self.listen_task
+      except asyncio.CancelledError:
+        pass
+    
+    # Close all peer handles
+    for peer_id, peer_handle in list(self.known_peers.items()):
+      try:
+        await peer_handle.close()
+      except Exception as e:
+        if DEBUG_DISCOVERY >= 1:
+          print(f"Error closing peer handle for {peer_id}: {e}")
+    
+    # Clear the known peers
+    self.known_peers.clear()
+    
+    # Shut down the file executor
+    self._file_executor.shutdown(wait=False)
+    
+  async def _check_health(self) -> bool:
+    """Implementation-specific health check for the manual discovery service."""
+    # Check if we're running
+    if not self._is_running:
+      return False
+      
+    # Check if the listen task is alive
+    if not self.listen_task or self.listen_task.done():
+      return False
+      
+    # Check if we can read the config file
+    try:
+      config_exists = os.path.exists(self.network_config_path)
+      if not config_exists:
+        return False
+    except Exception:
+      return False
+      
+    # All checks passed
+    return True

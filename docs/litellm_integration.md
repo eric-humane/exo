@@ -8,9 +8,10 @@ The LiteLLM integration allows exo to:
 
 1. Route requests to external providers (OpenAI, Anthropic, etc.) through a unified API
 2. Load balance between local exo nodes and external API providers
-3. Fallback to external providers when local models aren't available
-4. Use LiteLLM's standardized error handling and retry logic
-5. Support function calling and tools across different model providers
+3. Intelligently route requests to the fastest client with valid API keys
+4. Fallback to external providers when local models aren't available
+5. Use LiteLLM's standardized error handling and retry logic
+6. Support function calling and tools across different model providers
 
 ## Architecture
 
@@ -172,6 +173,23 @@ The integration supports OpenAI's function calling format. Example:
 }
 ```
 
+## Smart Routing
+
+The LiteLLM integration includes intelligent routing capabilities:
+
+1. **Latency-Based Routing**: Automatically routes requests to the fastest provider based on recent latency measurements
+2. **API Key Validation**: Only routes to providers with valid API keys
+3. **Provider Failover**: Automatically falls back to alternative providers when primary providers fail
+4. **Model Type Matching**: Finds equivalent models across providers for routing flexibility
+
+When a request is made:
+1. The adapter identifies the fastest provider with valid API keys for the requested model type
+2. If the requested model is from that provider, it's used directly
+3. If not, the adapter finds an equivalent model from the fastest provider
+4. If external providers fail, the adapter falls back to local models when possible
+
+This provides optimal performance while maintaining reliability.
+
 ## Limitations
 
 Current limitations of the LiteLLM integration:
@@ -179,6 +197,7 @@ Current limitations of the LiteLLM integration:
 1. Tokenization for external models isn't precise, so token counts may be estimates
 2. Function calling is only supported with models that natively support it
 3. Some provider-specific parameters aren't exposed in the API
+4. Latency tracking requires multiple requests to build accurate performance profiles
 
 ## Troubleshooting
 

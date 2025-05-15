@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package exo.networking.auth;
+
+// Authentication messages for peer-to-peer communication
+
+// Challenge issued by a node to verify another node's identity
+message AuthChallengeMessage {
+  string challenge_id = 1;
+  string challenge_data = 2;
+  string node_id = 3;
+  double created_at = 4;
+  double expires_at = 5;
+}
+
+// Response to a challenge, proving identity
+message AuthResponseMessage {
+  string challenge_id = 1;
+  string node_id = 2;
+  string response_data = 3;
+  string token_id = 4;
+}
+
+// Message including authentication data in broadcast messages
+message AuthBroadcastData {
+  string node_id = 1;
+  string auth_token_id = 2;
+  string auth_signature = 3;
+  double timestamp = 4;
+}
+
+// Authentication-related service for nodes
+service AuthService {
+  // Request a challenge for authentication
+  rpc RequestChallenge(RequestChallengeRequest) returns (RequestChallengeResponse);
+  
+  // Submit a challenge response
+  rpc SubmitChallengeResponse(SubmitChallengeResponseRequest) returns (SubmitChallengeResponseResponse);
+}
+
+// Request for an authentication challenge
+message RequestChallengeRequest {
+  string node_id = 1;
+}
+
+// Response containing an authentication challenge
+message RequestChallengeResponse {
+  AuthChallengeMessage challenge = 1;
+  bool success = 2;
+  string error_message = 3;
+}
+
+// Request to submit a challenge response
+message SubmitChallengeResponseRequest {
+  AuthResponseMessage response = 1;
+}
+
+// Response to a challenge response submission
+message SubmitChallengeResponseResponse {
+  bool authenticated = 1;
+  string error_message = 2;
+}

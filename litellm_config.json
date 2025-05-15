@@ -1,0 +1,44 @@
+{
+  "litellm_settings": {
+    "set_verbose": true,
+    "cache": false,
+    "timeout": 120
+  },
+  "default_model": "gpt-3.5-turbo",
+  "router": {},
+  "model_deployments": [
+    {
+      "model_name": "gpt-4",
+      "model": "openai/gpt-4",
+      "api_base": "https://api.openai.com/v1",
+      "api_key": "${OPENAI_API_KEY}"
+    },
+    {
+      "model_name": "gpt-4-turbo",
+      "model": "openai/gpt-4-turbo",
+      "api_base": "https://api.openai.com/v1",
+      "api_key": "${OPENAI_API_KEY}"
+    },
+    {
+      "model_name": "gpt-3.5-turbo",
+      "model": "openai/gpt-3.5-turbo",
+      "api_base": "https://api.openai.com/v1",
+      "api_key": "${OPENAI_API_KEY}"
+    },
+    {
+      "model_name": "claude-3-opus",
+      "model": "anthropic/claude-3-opus-20240229",
+      "api_key": "${ANTHROPIC_API_KEY}"
+    },
+    {
+      "model_name": "claude-3-sonnet",
+      "model": "anthropic/claude-3-sonnet-20240229",
+      "api_key": "${ANTHROPIC_API_KEY}"
+    },
+    {
+      "model_name": "claude-3-haiku",
+      "model": "anthropic/claude-3-haiku-20240307",
+      "api_key": "${ANTHROPIC_API_KEY}"
+    }
+  ]
+}

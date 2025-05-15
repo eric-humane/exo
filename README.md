@@ -55,6 +55,8 @@ exo will [automatically discover](https://github.com/exo-explore/exo/blob/945f90
 
 exo provides a [ChatGPT-compatible API](exo/api/chatgpt_api.py) for running models. It's a [one-line change](examples/chatgpt_api.sh) in your application to run models on your own hardware using exo.
 
+By default, the API implements secure CORS policies, only allowing specific origins to access it. This can be configured using the `EXO_CORS_ALLOWED_ORIGINS` environment variable (comma-separated list of allowed origins).
+
 ### Device Equality
 
 Unlike other distributed inference frameworks, exo does not use a master-worker architecture. Instead, exo devices [connect p2p](https://github.com/exo-explore/exo/blob/945f90f676182a751d2ad7bcf20987ab7fe0181e/exo/orchestration/node.py#L161). As long as a device is connected somewhere in the network, it can be used to run models.

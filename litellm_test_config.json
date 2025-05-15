@@ -1,0 +1,17 @@
+{
+  "litellm_settings": {
+    "set_verbose": true,
+    "cache": false,
+    "timeout": 120
+  },
+  "default_model": "gpt-3.5-turbo",
+  "router": {},
+  "model_deployments": [
+    {
+      "model_name": "gpt-3.5-turbo",
+      "model": "openai/gpt-3.5-turbo",
+      "api_base": "https://api.openai.com/v1",
+      "api_key": "${OPENAI_API_KEY}"
+    }
+  ]
+}

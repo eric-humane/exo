@@ -14,9 +14,18 @@
 <script src="/static/unpkg.com/marked-highlight@2.1.2/lib/index.umd.js"></script>
 <script src="/static/unpkg.com/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>
 <script src="/index.js"></script>
-<link href="/static/fonts.googleapis.com" rel="preconnect"/>
-<link crossorigin="" href="/static/fonts.gstatic.com" rel="preconnect"/>
-<link href="/static/fonts.googleapis.com/css2" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="anonymous" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Megrim&display=swap" rel="stylesheet"/>
+<!-- Backup font in case Google Fonts can't load -->
+<style>
+@font-face {
+  font-family: 'Megrim-Fallback';
+  src: local('Courier New');
+  font-weight: normal;
+  font-style: normal;
+}
+</style>
 <link href="/static/cdn.jsdelivr.net/npm/purecss@3.0.0/build/base-min.css" rel="stylesheet"/>
 <link crossorigin="anonymous" href="/static/cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A==" referrerpolicy="no-referrer" rel="stylesheet">
 <link href="/static/unpkg.com/@highlightjs/cdn-assets@11.9.0/styles/vs2015.min.css" rel="stylesheet"/>
@@ -43,11 +52,14 @@
     </div>
 
     <h2 class="megrim-regular" style="margin-bottom: 20px;">Models</h2>
-      <div style="display: flex; align-items: center; margin-bottom: 10px;">
+      <div style="display: flex; align-items: center; margin-bottom: 10px; justify-content: space-between;">
           <label style="margin-right: 5px;">
-              <input type="checkbox" x-model="showDownloadedOnly" style="margin-right: 5px;">
+              <input type="checkbox" x-model="showDownloadedOnly" @change="filterChanged()" style="margin-right: 5px;">
               Downloaded only
           </label>
+          <button id="refresh-models" class="refresh-button" title="Refresh model list" @click="fetchModels()">
+              <i class="fas fa-sync-alt"></i>
+          </button>
       </div>
 
     <!-- Loading indicator -->
@@ -62,12 +74,16 @@
             <div class="model-group-header" @click="toggleGroup(mainPrefix)">
                 <div class="group-header-content">
                     <span x-text="mainPrefix"></span>
-                    <span class="model-count" x-text="getGroupCounts(Object.values(subGroups).flatMap(group => Object.values(group)))"></span>
+                    <span class="model-count" x-text="getNestedGroupCounts(subGroups)"></span>
                 </div>
                 <i class="fas" :class="isGroupExpanded(mainPrefix) ? 'fa-chevron-down' : 'fa-chevron-right'"></i>
             </div>
             
             <div class="model-group-content" x-show="isGroupExpanded(mainPrefix)" x-transition>
+                <div x-show="Object.keys(subGroups).length === 0" class="empty-category-message">
+                    No models available in this category
+                </div>
+                
                 <template x-for="[subPrefix, groupModels] in Object.entries(subGroups)" :key="subPrefix">
                     <div class="model-subgroup">
                         <div class="model-subgroup-header" @click.stop="toggleGroup(mainPrefix, subPrefix)">
@@ -79,16 +95,28 @@
                         </div>
                         
                         <div class="model-subgroup-content" x-show="isGroupExpanded(mainPrefix, subPrefix)" x-transition>
+                            <div x-show="Object.keys(groupModels).length === 0" class="empty-category-message">
+                                No models available
+                            </div>
+                        
                             <template x-for="(model, key) in groupModels" :key="key">
                                 <div class="model-option"
-                                     :class="{ 'selected': cstate.selectedModel === key }"
+                                     :class="{ 'selected': cstate.selectedModel === key, 
+                                              'cloud-model': model.isCloudModel || model.provider === 'openai' || model.provider === 'anthropic',
+                                              'peer-model': model.isPeerModel }"
                                      @click="cstate.selectedModel = key">
                                     <div class="model-header">
-                                        <div class="model-name" x-text="model.name"></div>
+                                        <div class="model-name">
+                                            <span x-text="model.name || key"></span>
+                                            <span x-show="model.isCloudModel || model.provider === 'openai' || model.provider === 'anthropic'" 
+                                                  class="model-badge cloud-badge">CLOUD</span>
+                                            <span x-show="model.isPeerModel" class="model-badge peer-badge">NETWORK</span>
+                                        </div>
                                         <button
                                             @click.stop="deleteModel(key, model)"
                                             class="model-delete-button"
-                                            x-show="model.download_percentage > 0">
+                                            x-show="!model.isCloudModel && !model.isPeerModel && model.canDelete !== false && 
+                                                   (model.download_percentage > 0 || model.downloaded)">
                                             <i class="fas fa-trash"></i>
                                         </button>
                                     </div>
@@ -98,17 +126,23 @@
                                                 <span><i class="fas fa-spinner fa-spin"></i> Checking download status...</span>
                                             </template>
                                             <div class="model-progress-info">
-                                                <template x-if="!model.loading && model.download_percentage != null">
+                                                <template x-if="!model.loading">
                                                     <span>
-                                                        <template x-if="downloadProgress?.some(p =>
-                                                            p.repo_id && p.repo_id.toLowerCase().includes(key.toLowerCase()) && !p.isComplete
-                                                        )">
+                                                        <template x-if="downloadProgress?.some(p => 
+                                                            p.repo_id && p.repo_id.toLowerCase().includes(key.toLowerCase()) && !p.isComplete)">
                                                             <i class="fas fa-circle-notch fa-spin"></i>
                                                         </template>
-                                                        <span x-text="model.downloaded ? 'Downloaded' : `${Math.round(model.download_percentage)}% downloaded`"></span>
+                                                        <span x-text="model.downloaded === true || model.ready === true || model.download_percentage === 100 || (model.provider && model.provider !== 'exo') ? 
+                                                                      'Downloaded' : 
+                                                                      (model.download_percentage > 0 ? `${Math.round(model.download_percentage)}% downloaded` : 'Not downloaded')"></span>
                                                     </span>
                                                 </template>
-                                                <template x-if="!model.loading && (model.download_percentage === null || model.download_percentage < 100) && !downloadProgress?.some(p => !p.isComplete)">
+                                                <template x-if="!model.loading && 
+                                                           (!model.downloaded && model.downloaded !== true) && 
+                                                           (!model.ready || model.ready === false) && 
+                                                           (model.download_percentage === null || model.download_percentage === 0 || model.download_percentage < 100) && 
+                                                           !downloadProgress?.some(p => !p.isComplete) &&
+                                                           (!model.provider || model.provider === 'exo')">
                                                     <button
                                                         @click.stop="handleDownload(key)"
                                                         class="model-download-button">
